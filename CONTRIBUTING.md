@@ -7,7 +7,6 @@ between logical steps; comments should explain an edge case or a decision.
 ```sh
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm lint
 pnpm build
 node dist/cli.js --help
 pnpm demo
@@ -30,8 +29,9 @@ configuration, dependency directories, generated builds or test recordings.
 The repository owner keeps test suites and test configuration local, excluded
 from Git. A public clone has no private test suite. If the local suites are
 available, also run `pnpm test`, `pnpm exec playwright install chromium`, and
-`pnpm test:e2e`. Public CI validates typecheck, lint, build, CLI help and the real
-demo workflow on all three operating systems.
+`pnpm test:e2e`. ESLint configuration also stays local; run `pnpm lint` when a
+local config is available. Public CI validates typecheck, build, CLI help and
+the real demo workflow on all three operating systems.
 
 See [architecture](docs/architecture.md), [configuration](docs/configuration.md)
 and [adapter behavior](docs/adapters.md) for extension points.

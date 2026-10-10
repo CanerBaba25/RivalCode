@@ -2,6 +2,11 @@
 AGENTS.md
 agents.md
 
+# ESLint configuration and cache stay local
+eslint.config.*
+.eslintrc*
+.eslintcache
+
 # RTK local instructions, configuration, and caches
 RTK.md
 rtk.md

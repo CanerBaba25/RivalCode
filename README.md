@@ -47,7 +47,7 @@ pnpm build
 
 # Install the built CLI locally; no npm release is required.
 pnpm pack --pack-destination .rivalcode/packages
-npm install -g .rivalcode/packages/rivalcode-0.1.0.tgz
+npm install -g .rivalcode/packages/rivalcode-0.1.1.tgz
 ```
 
 Then, inside your project:
@@ -226,7 +226,6 @@ Tailwind and Node SQLite. [Package boundaries and lifecycle](docs/architecture.m
 ```sh
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm lint
 pnpm build
 node dist/cli.js --help
 pnpm demo
@@ -236,9 +235,10 @@ pnpm dev:web
 pnpm dev
 ```
 
-CI validates the build, types, lint, CLI help and demo workflow on Linux, Windows
-and macOS. Test suites/configuration remain local at the repository owner's
-request; the public clone does not include them. Local tests use temporary
+CI validates the build, types, CLI help and demo workflow on Linux, Windows
+and macOS. ESLint configuration stays local; run `pnpm lint` when your local
+config is available. Test suites/configuration remain local at the repository
+owner's request; the public clone does not include them. Local tests use temporary
 repositories and sanitized agent fixtures. No normal validation needs a paid
 agent account. If you have the local suites, run `pnpm test` and `pnpm test:e2e`.
 See [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -28,7 +28,7 @@ program.exitOverride().configureOutput({
 program
   .name('rivalcode')
   .description('Benchmark coding agents on your repository. Same task. Real evidence.')
-  .version('0.1.0')
+  .version('0.1.1')
   .option('--repo <path>', 'repository directory', process.cwd())
   .option('--debug', 'show diagnostic stack traces')
 

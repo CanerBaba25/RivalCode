@@ -114,7 +114,7 @@ function App() {
                 <Icon name="shield" size={18} />
               </div>
               <div className="sidebar-version">
-                <span>RivalCode v0.1.0</span>
+                <span>RivalCode v0.1.1</span>
                 <span>OPEN SOURCE</span>
               </div>
             </div>
