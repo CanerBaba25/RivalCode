@@ -1,4 +1,4 @@
-import { State, Empty, PageHeading, Panel, useApi } from '../lib/common.js'
+import { State, Empty, PageHeading, Panel, useApi, Link, Icon } from '../lib/common.js'
 import type { Page, Session } from '@rivalcode/shared'
 import { Filters, Pagination, useFilters } from '../components/Filters.js'
 import { SessionTable } from '../components/SessionTable.js'
@@ -8,7 +8,16 @@ export function Sessions() {
   const query = useApi<Page<Session>>(`/api/sessions?${filter.params}`)
   return (
     <>
-      <PageHeading eyebrow="CAPTURE → VERIFY → LEARN" title="Sessions">
+      <PageHeading
+        eyebrow="CAPTURE → VERIFY → LEARN"
+        title="Sessions"
+        actions={
+          <Link className="button secondary" to="/compare">
+            <Icon name="compare" size={16} />
+            Compare runs
+          </Link>
+        }
+      >
         Every run, with the evidence to explain its outcome.
       </PageHeading>
       <Filters state={filter} />

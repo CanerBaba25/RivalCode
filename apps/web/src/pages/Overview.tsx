@@ -10,53 +10,71 @@ import {
   useApi,
   names,
   duration,
-  number,
-  cost,
-  costProvenance
+  number
 } from '../lib/common.js'
 import type { OverviewData } from '../lib/common.js'
 import { SessionTable } from '../components/SessionTable.js'
-import { BattleCards } from '../components/BattleCards.js'
+import { ActiveRunsFocus, LatestBattleFocus, OverviewActions } from '../components/OverviewFocus.js'
+import { OutcomePanel, UsageCoverage, overviewRates } from '../components/OverviewInsights.js'
 
 export function Overview() {
   const query = useApi<OverviewData>('/api/overview')
   const data = query.data
+  const rates = data ? overviewRates(data) : null
+  const demoPresent =
+    data &&
+    (data.recentSessions.some((session) => session.demo) ||
+      data.agentUsage.some((usage) => usage.agentId === 'demo') ||
+      data.recentBattles.some((battle) =>
+        battle.participants.some((participant) => participant.demo)
+      ))
+
   return (
     <>
       <PageHeading
-        eyebrow="YOUR PERSONAL BENCHMARK LAB"
-        title="See what your agents actually do."
+        eyebrow="WORKSPACE SNAPSHOT"
+        title="Workspace overview"
         actions={
-          <Link to="/battles" className="button primary">
+          <Link to="/compare" className="button primary">
             <Icon name="battle" />
-            Open the arena
+            Compare sessions
             <Icon name="arrow" size={16} />
           </Link>
         }
       >
-        Measure outcomes. Replay the work. Compare on your own code.
+        Recorded outcomes, current runs and your latest comparison.
       </PageHeading>
       <State {...query} />
-      {data && (
+      {data && rates && (
         <>
-          {data.recentSessions.some((session) => session.demo) && (
+          {demoPresent && (
             <div className="demo-notice">
-              <strong>Explicit demo fixtures are present</strong> · Demo runs are labeled in each
-              session. Overview totals include all recorded runs, including these fixtures.
+              <strong>Explicit demo fixtures are present</strong> · Overview totals include labeled
+              demo runs.
             </div>
           )}
-          <div className="metrics">
+          <div className="metrics overview-metrics">
             <Metric
               label="Recorded sessions"
               value={number(data.totalSessions)}
-              detail={`${data.activeSessions} active now`}
+              detail={`${number(rates.finished)} finished · ${number(data.activeSessions)} active`}
               icon="sessions"
             />
             <Metric
-              label="Successful sessions"
-              value={<span className="text-teal">{number(data.successfulSessions)}</span>}
-              detail={`${data.failedSessions} failed or interrupted`}
+              label="Success rate"
+              value={
+                <span className="text-teal">
+                  {rates.successRate === null ? 'N/A' : `${number(rates.successRate)}%`}
+                </span>
+              }
+              detail={`${number(data.successfulSessions)} successful / ${number(rates.finished)} finished runs`}
               icon="check"
+            />
+            <Metric
+              label="Active now"
+              value={number(data.activeSessions)}
+              detail="Preparing, running or verifying"
+              icon="clock"
             />
             <Metric
               label="Average duration"
@@ -64,41 +82,16 @@ export function Overview() {
               detail="Across recorded sessions"
               icon="clock"
             />
-            <Metric
-              label="Available token usage"
-              value={number(data.totalTokens)}
-              detail={`${data.tokensAvailableRuns} of ${data.totalSessions} runs with usage`}
-              icon="code"
-            />
-            <Metric
-              label="Recorded cost"
-              value={cost(data.totalCostUsd, data.costType)}
-              detail={
-                <>
-                  {data.costAvailableRuns} runs · {costProvenance(data.costType, data.totalCostUsd)}
-                </>
-              }
-              icon="chart"
-            />
           </div>
-          <div className="section-title">
-            <div>
-              <div className="eyebrow">SAME TASK. SAME COMMIT.</div>
-              <h2>Recent battles</h2>
-            </div>
-            <Link to="/battles" className="text-link">
-              View all
-              <Icon name="arrow" size={16} />
-            </Link>
+          <div className="overview-focus-grid">
+            <LatestBattleFocus battle={data.recentBattles[0]} />
+            <ActiveRunsFocus active={data.activeSessions} />
           </div>
-          {data.recentBattles.length ? (
-            <BattleCards battles={data.recentBattles} />
-          ) : (
-            <Empty title="Your first comparison starts here">
-              <p>Run agents against the same task in isolated Git worktrees.</p>
-              <code>rivalcode battle --agents codex,claude --task "Add rate limiting"</code>
-            </Empty>
-          )}
+          <OverviewActions data={data} />
+          <div className="overview-insights-grid">
+            <OutcomePanel data={data} />
+            <UsageCoverage data={data} />
+          </div>
           <div className="overview-grid">
             <Panel title="Agent activity" hint="Recorded workloads on your machine">
               {data.agentUsage.length ? (
@@ -107,13 +100,15 @@ export function Overview() {
                     <div key={usage.agentId} className="usage-row">
                       <div>
                         <Agent id={usage.agentId} />
-                        <span>{usage.runs} runs</span>
+                        <span>
+                          {usage.runs} {usage.runs === 1 ? 'run' : 'runs'}
+                        </span>
                       </div>
                       <div className="bar-track">
                         <div
                           className={`bar-fill ${usage.agentId}`}
                           style={{
-                            width: `${(100 * usage.runs) / Math.max(...data.agentUsage.map((u) => u.runs), 1)}%`
+                            width: `${(100 * usage.runs) / Math.max(...data.agentUsage.map((item) => item.runs), 1)}%`
                           }}
                         />
                       </div>
@@ -121,7 +116,7 @@ export function Overview() {
                   ))}
                 </div>
               ) : (
-                <p className="muted inset">Agent usage appears after a recorded run.</p>
+                <p className="muted inset">Activity appears after a recorded run.</p>
               )}
             </Panel>
             <Panel title="Recent failures" hint="Evidence worth investigating">
@@ -136,6 +131,7 @@ export function Overview() {
                           {names[session.agentId]} ·{' '}
                           {session.error ?? `${session.findings.length} findings`}
                         </span>
+                        {session.demo && <span className="demo-badge">Explicit demo</span>}
                       </div>
                       <Icon name="arrow" size={16} />
                     </Link>
@@ -145,14 +141,14 @@ export function Overview() {
                 <div className="clear-state">
                   <Icon name="shield" size={36} />
                   <h3>No recorded failures</h3>
-                  <p>Failed checks and interrupted runs will appear here.</p>
+                  <p>Failed checks and interrupted runs appear here.</p>
                 </div>
               )}
             </Panel>
           </div>
           <Panel
             title="Recent sessions"
-            hint="Results backed by local verification"
+            hint="Open a run to inspect its captured evidence"
             action={
               <Link to="/sessions" className="text-link">
                 All sessions
@@ -164,21 +160,14 @@ export function Overview() {
               <SessionTable sessions={data.recentSessions} />
             ) : (
               <Empty title="No sessions recorded yet">
-                <p>Capture your first run with an installed agent:</p>
-                <code>rivalcode run codex --task "Add a health endpoint"</code>
-                <p>
-                  From a source checkout, generate explicit labeled fixtures with{' '}
-                  <code>pnpm demo</code>.
-                </p>
+                <p>Check your installed agents, then capture a task from your repository.</p>
+                <Link to="/agents" className="button secondary">
+                  View available agents
+                  <Icon name="arrow" size={16} />
+                </Link>
               </Empty>
             )}
           </Panel>
-          {data.costType === 'estimated' && (
-            <p className="footnote">
-              * Estimates use configured API-equivalent pricing. They do not represent subscription
-              charges.
-            </p>
-          )}
         </>
       )}
     </>

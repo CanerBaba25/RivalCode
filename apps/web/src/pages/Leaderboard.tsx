@@ -88,7 +88,8 @@ export function Leaderboard() {
         <Icon name="shield" size={22} />
         <p>
           This is your personal workload history. It does not establish a universal “best model.”
-          Unavailable metrics remain N/A; * estimates use configured API-equivalent pricing.
+          Unavailable metrics remain N/A. Estimated costs use token pricing and do not represent
+          subscription charges.
         </p>
       </div>
     </>

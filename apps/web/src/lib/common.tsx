@@ -16,17 +16,20 @@ export const Router = createContext<{ path: string; navigate: (path: string) => 
 export function Link({
   to,
   children,
-  className
+  className,
+  'aria-label': ariaLabel
 }: {
   to: string
   children: React.ReactNode
   className?: string
+  'aria-label'?: string
 }) {
   const { navigate } = useContext(Router)
   return (
     <a
       href={to}
       className={className}
+      aria-label={ariaLabel}
       onClick={(event) => {
         if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) {
           event.preventDefault()
@@ -124,7 +127,7 @@ export function date(value: string): string {
   })
 }
 export function shortId(value: string): string {
-  return value.slice(0, 8)
+  return value.length <= 14 ? value : `${value.slice(0, 3)}…${value.slice(-6)}`
 }
 export function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const paths: Record<string, React.ReactNode> = {
@@ -145,6 +148,19 @@ export function Icon({ name, size = 20 }: { name: string; size?: number }) {
     battle: (
       <>
         <path d="m4 3 7 7-3 3-7-7V3ZM20 3l-7 7 3 3 7-7V3ZM4 20l5-5M20 20l-5-5M2 16l6 6M16 22l6-6" />
+      </>
+    ),
+    compare: (
+      <>
+        <rect x="3" y="4" width="7" height="16" rx="2" />
+        <rect x="14" y="4" width="7" height="16" rx="2" />
+        <path d="M6 9h1M6 14h1M17 9h1M17 14h1" />
+      </>
+    ),
+    info: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 11v6M12 7h.01" />
       </>
     ),
     chart: (

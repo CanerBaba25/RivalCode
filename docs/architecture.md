@@ -55,5 +55,13 @@ Artifact files are replaced atomically without writing through existing links.
 Capture failures stop the agent process and retain a failed session; an evidence
 write failure also prevents the result from being eligible to win.
 
+Battle and historical comparisons share one evidence view. Historical selections
+contain two to four persisted sessions and use shareable routes; selecting a
+reference changes displayed differences without changing stored scores or ranks.
+Different tasks, commits or required checks are flagged. Unknown usage stays
+unknown, and token/cost differences require compatible model or accounting
+provenance. The overview reports active runs, finished-run success rates and
+measurement coverage separately, so missing data does not imply zero usage.
+
 See [scoring](scoring.md) for deterministic calculations and [adapters](adapters.md)
 for fidelity and provider accounting limits.

@@ -8,6 +8,7 @@ import { Battles } from './pages/Battles.js'
 import { BattleDetail } from './pages/BattleDetail.js'
 import { Leaderboard } from './pages/Leaderboard.js'
 import { Agents } from './pages/Agents.js'
+import { Compare } from './pages/Compare.js'
 import './styles.css'
 
 function App() {
@@ -43,6 +44,7 @@ function App() {
   const nav = [
     ['overview', '/', 'grid', 'Overview'],
     ['sessions', '/sessions', 'sessions', 'Sessions'],
+    ['compare', '/compare', 'compare', 'Compare'],
     ['battles', '/battles', 'battle', 'Battles'],
     ['leaderboard', '/leaderboard', 'chart', 'Leaderboard'],
     ['agents', '/agents', 'agents', 'Agents']
@@ -53,6 +55,7 @@ function App() {
     page = id ? <SessionDetail key={id} id={encodeURIComponent(id)} /> : <Sessions />
   else if (section === 'battles')
     page = id ? <BattleDetail key={id} id={encodeURIComponent(id)} /> : <Battles />
+  else if (section === 'compare') page = <Compare key={id ?? 'picker'} ids={id} />
   else if (section === 'leaderboard') page = <Leaderboard />
   else if (section === 'agents') page = <Agents />
   else

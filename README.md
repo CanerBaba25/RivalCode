@@ -27,12 +27,12 @@ with the same setup, checks and time limit.
 No account, cloud backend or RivalCode telemetry. Your history lives in local
 SQLite; the selected agent keeps using its own CLI, authentication and permissions.
 
-![RivalCode battle dashboard showing an explicitly labeled Demo Agent](docs/images/dashboard.png)
+![RivalCode workspace overview showing real recorded Demo Agent runs](docs/images/overview.png)
 
-The screenshot uses the explicit Demo Agent. It performs a real edit and runs
-real tests; it does not simulate provider performance, model tokens or cost.
+The media use the explicit local Demo Agent. It performs real edits and runs
+real tests; provider performance, model tokens and cost are not simulated.
 
-[Watch the 14-second demo](docs/images/demo.webm) · [Inspect the replay and diff](docs/images/replay-diff.png)
+[Watch the local demo](docs/images/demo.webm) · [Compare recorded runs](docs/images/comparison.png) · [Inspect the battle](docs/images/dashboard.png) · [Open the saved diff](docs/images/replay-diff.png)
 
 ## Quick start
 
@@ -99,6 +99,7 @@ See the [scoring rules](docs/scoring.md).
 | Git diff viewer          | Changed-file sidebar, additions/deletions, binary changes and readable hunks |
 | Deterministic findings   | Repeated failures, regressions, forbidden paths and oversized patches        |
 | Battle arena             | Same-commit worktrees, side-by-side metrics and transparent winner rules     |
+| Recorded-run comparison  | Two to four saved sessions, reference differences and linked evidence        |
 | Personal leaderboard     | Your recorded success rate, scores, time and available usage/cost            |
 | Local exports            | Complete JSON or shareable Markdown reports                                  |
 | Recovery                 | Persisted interrupted runs, bounded logs and ownership-aware cleanup         |
@@ -110,6 +111,7 @@ observations are labeled according to what was actually captured.
 
 - **Overview:** recorded sessions, outcomes, activity, usage and recent battles.
 - **Sessions:** sort and filter by agent, repository, status, dates and score.
+- **Compare:** select two to four recorded runs, choose a reference and inspect differences.
 - **Session detail:** checks, findings, usage, timeline playback and a lazy diff viewer.
 - **Battles:** compare participants and open the evidence behind individual metrics.
 - **Leaderboard:** personal workload statistics with repository/date/project/tag filters.
@@ -117,6 +119,11 @@ observations are labeled according to what was actually captured.
 The bundled API and dashboard start together. Live updates observe the persistent
 database, including runs from a separate CLI process. There are no fake production
 responses or sample sessions inserted on startup.
+
+![Two real local Demo Agent runs compared with a reference and independent verification](docs/images/comparison.png)
+
+This view compares two recorded runs of the same Demo Agent. Historical
+comparisons retain each run's original conditions and do not assign a battle winner.
 
 ## Supported agents
 
@@ -147,9 +154,10 @@ pnpm demo
 This creates a new ignored demo repository with a deliberately broken addition
 function, runs the labeled **Demo Agent**, verifies its real patch, and records
 both a session and a battle. Use the printed command to open that repository's
-dashboard. Existing history and your working project are untouched.
+dashboard, then select the recorded runs in **Compare**. Existing history and
+your working project are untouched.
 
-![RivalCode demo showing a real session, replay, diff and battle](docs/images/demo.gif)
+![Actual RivalCode demo tour through the overview, comparison, battle, replay and saved diff](docs/images/demo.gif)
 
 ## CLI
 
