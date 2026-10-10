@@ -1,0 +1,14 @@
+{
+  "name": "@rivalcode/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@rivalcode/core": "workspace:*",
+    "@rivalcode/runtime": "workspace:*",
+    "@rivalcode/shared": "workspace:*",
+    "@rivalcode/adapters": "workspace:*",
+    "@rivalcode/server": "workspace:*",
+    "commander": "^14.0.0"
+  }
+}

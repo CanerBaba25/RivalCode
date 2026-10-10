@@ -1,0 +1,46 @@
+# Local agent instructions
+AGENTS.md
+agents.md
+
+# RTK local instructions, configuration, and caches
+RTK.md
+rtk.md
+rtk.toml
+.rtk.toml
+.rtk/
+/.codex/hooks.json
+/.codex/hooks.json.graphify-bak
+
+# Graphify local configuration and generated artifacts
+.graphifyignore
+.graphifyrc
+.graphify/
+.graphify_*
+graphify-out/
+
+# Dependencies, builds, local state, and test artifacts
+node_modules/
+dist/
+.rivalcode/
+.demo/
+coverage/
+test-results/
+playwright-report/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+
+# Local working plans and supplied implementation specification
+/docs/implementation-plan.md
+/docs/SPECIFICATION.md
+/docs/acceptance.md
+
+# Test suites remain local at the repository owner's request
+tests/
+test/
+__tests__/
+*.test.*
+*.spec.*
+/vitest.config.ts
+/playwright.config.ts

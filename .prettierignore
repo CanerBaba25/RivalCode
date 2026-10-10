@@ -1,0 +1,13 @@
+node_modules
+dist
+graphify-out
+.rivalcode
+.demo
+test-results
+playwright-report
+pnpm-lock.yaml
+docs/SPECIFICATION.md
+docs/implementation-plan.md
+docs/acceptance.md
+AGENTS.md
+RTK.md

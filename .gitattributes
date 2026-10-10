@@ -1,0 +1,5 @@
+# Consistent source endings across Windows, macOS and Linux.
+* text=auto eol=lf
+*.png binary
+*.webm binary
+*.gif binary

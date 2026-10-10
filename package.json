@@ -1,0 +1,58 @@
+{
+  "name": "rivalcode",
+  "version": "0.1.0",
+  "description": "Local profiler, replay debugger and benchmark arena for AI coding agents",
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "bin": {
+    "rivalcode": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "tsx apps/cli/src/index.ts dashboard",
+    "dev:cli": "tsx apps/cli/src/index.ts",
+    "dev:web": "pnpm --filter @rivalcode/web dev",
+    "build": "pnpm --filter @rivalcode/web build && tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "demo": "tsx scripts/demo.ts",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.0",
+    "commander": "^14.0.0",
+    "cross-spawn": "^7.0.6",
+    "hono": "^4.9.0",
+    "minimatch": "^10.0.3",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@rivalcode/shared": "workspace:*",
+    "@rivalcode/runtime": "workspace:*",
+    "@rivalcode/adapters": "workspace:*",
+    "@rivalcode/core": "workspace:*",
+    "@rivalcode/server": "workspace:*",
+    "prettier": "^3.6.0",
+    "@playwright/test": "^1.56.0",
+    "@types/cross-spawn": "^6.0.6",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "eslint": "^9.35.0",
+    "typescript-eslint": "^8.43.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  }
+}

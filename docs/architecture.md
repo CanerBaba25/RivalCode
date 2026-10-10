@@ -1,0 +1,52 @@
+# Architecture
+
+RivalCode is a local TypeScript/pnpm workspace. Its distributable CLI bundles the
+workspace code and serves built React assets; users do not install a separate API
+server. SQLite is provided by Node's built-in `node:sqlite`, requiring Node 22.18+.
+
+```mermaid
+flowchart LR
+  CLI[CLI] --> Core[Run and battle lifecycle]
+  Core --> Adapters[Vendor adapters]
+  Core --> Runtime[Git · processes · verification · privacy]
+  Adapters --> Process[Agent CLI]
+  Core --> Store[(Local SQLite + bounded artifacts)]
+  API[Local Hono API] --> Store
+  API --> Web[React dashboard + SSE]
+```
+
+| Boundary            | Responsibility                                                     |
+| ------------------- | ------------------------------------------------------------------ |
+| `packages/shared`   | Strict domain contracts                                            |
+| `packages/runtime`  | Config, redaction, processes, Git, verification, typed persistence |
+| `packages/adapters` | Documented native streams and reversible local integrations        |
+| `packages/core`     | Lifecycle, events, findings, scores, ranking, export, cleanup      |
+| `apps/cli`          | User commands, live progress, cancellation and actionable errors   |
+| `apps/server`       | Paginated API, secure artifact reads and cross-process SSE         |
+| `apps/web`          | Real recorded sessions, replay, diffs, battles and history         |
+
+Runs persist `preparing`, `running`, `verifying` and terminal states. Startup
+recovery marks dead-owner sessions aborted and skips live processes. Agent
+timeout/cancellation saves partial evidence and keeps failed worktrees available
+until explicit cleanup. Independent checks run after the agent exits.
+
+Git baseline objects use an alternate index and unreachable commit-tree object;
+they never change the user's branch, HEAD or staged index. This allows dirty
+single runs to distinguish the agent patch from preexisting changes. Battles
+require clean committed repositories and use detached worktrees from the exact
+same base. Participants run sequentially by default; failures persist independently.
+
+Numbered transactional migrations create repositories, sessions, events, usage,
+file changes, verification runs, findings, battles and battle participants. Indexed
+columns support paginated/filterable queries; typed documents retain complete
+domain records. WAL allows the dashboard to read while the CLI writes. SSE
+observes persistent changes across processes.
+
+The event boundary filters native fields, drops reasoning, respects prompt/
+assistant/tool-output settings and redacts before durability. Agent stdout is
+decoded incrementally and never stored as a raw transcript. Verification logs,
+event JSONL and final patches have byte caps. Complete timelines are stored in
+SQLite and loaded in pages; large patches are loaded only when requested.
+
+See [scoring](scoring.md) for deterministic calculations and [adapters](adapters.md)
+for fidelity and provider accounting limits.
