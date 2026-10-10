@@ -109,7 +109,7 @@ observations are labeled according to what was actually captured.
 
 ## Dashboard
 
-- **Overview:** recorded sessions, outcomes, activity, usage and recent battles.
+- **Overview:** finished-run outcomes, live activity, failure evidence and usage coverage.
 - **Sessions:** sort and filter by agent, repository, status, dates and score.
 - **Compare:** select two to four recorded runs, choose a reference and inspect differences.
 - **Session detail:** checks, findings, usage, timeline playback and a lazy diff viewer.
@@ -120,19 +120,32 @@ The bundled API and dashboard start together. Live updates observe the persisten
 database, including runs from a separate CLI process. There are no fake production
 responses or sample sessions inserted on startup.
 
+Comparison selections survive filters, pages, **Change selection** and reloads in
+the same browser tab when tab storage is available. **Copy comparison link** copies
+a local URL that works while the same repository's dashboard is running. Use
+JSON or Markdown exports for portable reports.
+
 ![Two real local Demo Agent runs compared with a reference and independent verification](docs/images/comparison.png)
 
 This view compares two recorded runs of the same Demo Agent. Historical
 comparisons retain each run's original conditions and do not assign a battle winner.
+Eligibility explanations and matched baseline checks show why a run qualifies and
+which required checks improved or regressed. Missing or unmatched baselines remain
+explicit. Token differences require complete observed native-model coverage with
+a matching model and accounting scope; older unverified, mixed-model, or main-agent-only
+token usage stays **Not comparable**. Claude's complete per-model totals include
+subagents; its result-level fallback is labeled separately.
+Cost differences require complete measurements with matching provenance. Missing
+usage stays **N/A**.
 
 ## Supported agents
 
-| Agent       | Native integration                      | Usage and accounting                                 |
-| ----------- | --------------------------------------- | ---------------------------------------------------- |
-| Codex       | `exec --json`                           | Turn tokens; cost/model may be unavailable           |
-| Claude Code | Headless `stream-json`                  | Terminal usage and explicitly estimated client cost  |
-| Gemini CLI  | Headless `stream-json`                  | Final token counts; native monetary cost unavailable |
-| OpenCode    | JSON events + temporary observer plugin | Step tokens and native API-equivalent cost estimate  |
+| Agent       | Native integration                      | Usage and accounting                                                         |
+| ----------- | --------------------------------------- | ---------------------------------------------------------------------------- |
+| Codex       | `exec --json`                           | Turn tokens; cost/model may be unavailable                                   |
+| Claude Code | Headless `stream-json`                  | Per-model session totals; labeled main-agent fallback; estimated client cost |
+| Gemini CLI  | Headless `stream-json`                  | Final token counts; native monetary cost unavailable                         |
+| OpenCode    | JSON events + temporary observer plugin | Step tokens and native API-equivalent cost estimate                          |
 
 Adapters expose their capture capabilities honestly. Missing optional agents do
 not block an installed one. Existing vendor settings and permission policy are

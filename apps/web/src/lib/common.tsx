@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
+import React, { createContext, useContext, useEffect, useState } from 'react'
 import type { AgentId, Session, Battle } from '@rivalcode/shared'
 
 export const names: Record<AgentId, string> = {
@@ -17,12 +17,14 @@ export function Link({
   to,
   children,
   className,
-  'aria-label': ariaLabel
+  'aria-label': ariaLabel,
+  'aria-current': ariaCurrent
 }: {
   to: string
   children: React.ReactNode
   className?: string
   'aria-label'?: string
+  'aria-current'?: React.AriaAttributes['aria-current']
 }) {
   const { navigate } = useContext(Router)
   return (
@@ -30,8 +32,15 @@ export function Link({
       href={to}
       className={className}
       aria-label={ariaLabel}
+      aria-current={ariaCurrent}
       onClick={(event) => {
-        if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) {
+        if (
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.shiftKey &&
+          !event.altKey &&
+          event.button === 0
+        ) {
           event.preventDefault()
           navigate(to)
         }
@@ -56,40 +65,60 @@ export function useApi<T>(path: string | null): {
   retry: () => void
 } {
   const revision = useContext(Revision)
-  const [data, setData] = useState<T>()
-  const [loading, setLoading] = useState(Boolean(path))
-  const [error, setError] = useState<string | null>(null)
+  const [state, setState] = useState<{
+    path: string | null
+    data?: T
+    loading: boolean
+    error: string | null
+  }>({ path, loading: Boolean(path), error: null })
   const [retryCount, setRetryCount] = useState(0)
-  const previousPath = useRef(path)
+
   useEffect(() => {
     if (!path) {
-      setLoading(false)
+      setState({ path, loading: false, error: null })
       return
     }
     const controller = new AbortController()
-    if (path !== previousPath.current) {
-      setData(undefined)
-      previousPath.current = path
-    }
-    setLoading(true)
-    setError(null)
+
+    setState((previous) => ({
+      path,
+      data: previous.path === path ? previous.data : undefined,
+      loading: true,
+      error: null
+    }))
+
     void request<T>(path, controller.signal)
       .then((result) => {
-        if (!controller.signal.aborted) setData(result)
+        if (!controller.signal.aborted)
+          setState({ path, data: result, loading: false, error: null })
       })
       .catch((caught: unknown) => {
         if (!controller.signal.aborted)
-          setError(caught instanceof Error ? caught.message : 'Could not read local data.')
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false)
+          setState((previous) => ({
+            path,
+            data: previous.path === path ? previous.data : undefined,
+            loading: false,
+            error: caught instanceof Error ? caught.message : 'Could not read local data.'
+          }))
       })
     return () => controller.abort()
   }, [path, revision, retryCount])
-  return { data, loading, error, retry: () => setRetryCount((value) => value + 1) }
+
+  // Never render a previous request's record while a new path is being loaded.
+  const current =
+    path && state.path === path ? state : { data: undefined, loading: Boolean(path), error: null }
+
+  return {
+    data: current.data,
+    loading: current.loading,
+    error: current.error,
+    retry: () => setRetryCount((value) => value + 1)
+  }
 }
 export function duration(milliseconds: number | null | undefined): string {
-  if (milliseconds === null || milliseconds === undefined) return 'N/A'
+  if (milliseconds == null || !Number.isFinite(milliseconds) || milliseconds < 0) return 'N/A'
+  if (milliseconds > 0 && milliseconds < 1000) return `${Math.max(1, Math.round(milliseconds))}ms`
+  if (milliseconds >= 1000 && milliseconds < 10000) return `${(milliseconds / 1000).toFixed(2)}s`
   const seconds = Math.round(milliseconds / 1000)
   if (seconds < 60) return `${seconds}s`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
@@ -101,9 +130,11 @@ export function number(value: number | null | undefined): string {
     : new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)
 }
 export function cost(value: number | null | undefined, type?: string): string {
-  return value === null || value === undefined
-    ? 'N/A'
-    : `$${value.toFixed(3)}${type === 'estimated' ? '*' : ''}`
+  if (value == null || !Number.isFinite(value) || value < 0) return 'N/A'
+
+  const amount = value > 0 && value < 0.001 ? '<$0.001' : `$${value.toFixed(3)}`
+
+  return `${amount}${type === 'estimated' ? '*' : ''}`
 }
 export function modelLabel(model?: string, source?: 'configured' | 'native'): string {
   if (!model) return 'Model unavailable'

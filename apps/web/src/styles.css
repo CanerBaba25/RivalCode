@@ -3447,6 +3447,24 @@ tbody tr:hover {
   font-size: 12px;
 }
 
+.comparison-share {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 14px 18px;
+  border: 1px solid #34495d;
+  border-radius: 8px;
+  color: #a7bacb;
+  font-size: 13px;
+}
+
+.comparison-share input {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
 .selection-table input[type='checkbox'] {
   width: 18px;
   height: 18px;

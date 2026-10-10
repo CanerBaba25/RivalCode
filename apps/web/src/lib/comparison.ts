@@ -94,7 +94,7 @@ export const comparisonMetrics: ComparisonMetric[] = [
   {
     key: 'tokens',
     label: 'Reported tokens',
-    description: 'Differences require complete totals and the same native model',
+    description: 'Differences require complete accounting and the same native model',
     group: 'Usage',
     direction: 'lower',
     bestLabel: 'Fewest tokens'
@@ -121,13 +121,14 @@ export const isFinal = (session: Session): boolean =>
   ['completed', 'failed', 'aborted'].includes(session.status)
 
 export function checkPredicate(key: string): ((check: VerificationRun) => boolean) | undefined {
+  if (key === 'all') return () => true
   if (key === 'required') return (check) => check.required
   const patterns: Record<string, RegExp> = {
     tests: /\b(test|tests|pytest|vitest|jest|mocha|unittest)\b/i,
     lint: /\b(lint|ruff|eslint|clippy)\b/i,
     build: /\b(build|typecheck|type check|tsc|compile|check types)\b/i
   }
-  const pattern = patterns[key]
+  const pattern = Object.hasOwn(patterns, key) ? patterns[key] : undefined
 
   return pattern
     ? (check) => pattern.test(`${check.checkId} ${check.command}`.replaceAll('_', ' '))
@@ -143,11 +144,67 @@ export function finalChecks(session: Session, key: string): VerificationRun[] {
 }
 
 export function requiredCheckSignature(session: Session): string {
+  return checkDefinitionsSignature(session, 'required')
+}
+
+export function checkDefinitionsSignature(session: Session, key: string): string {
   return JSON.stringify(
-    finalChecks(session, 'required')
-      .map((check) => [check.checkId, check.command])
+    finalChecks(session, key)
+      .map((check) => [check.checkId, check.command, check.required])
       .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
   )
+}
+
+export function checkComparabilityReason(a: Session, b: Session, key: string): string | undefined {
+  if (!isFinal(a) || !isFinal(b)) return 'Final verification pending'
+  const checks = [...finalChecks(a, key), ...finalChecks(b, key)]
+  if (!finalChecks(a, key).length || !finalChecks(b, key).length) return 'Final checks unavailable'
+  if (checks.some((check) => /\[REDACTED\]/.test(`${check.checkId} ${check.command}`)))
+    return 'Check definitions redacted'
+  if (checkDefinitionsSignature(a, key) !== checkDefinitionsSignature(b, key))
+    return 'Different check definitions'
+  return undefined
+}
+
+export function baselineChecks(session: Session, key = 'required'): VerificationRun[] {
+  const final = finalChecks(session, key)
+
+  return session.verification.filter(
+    (check) =>
+      check.phase === 'baseline' &&
+      final.some(
+        (result) =>
+          result.checkId === check.checkId &&
+          result.command === check.command &&
+          result.required === check.required &&
+          !/\[REDACTED\]/.test(`${check.checkId} ${check.command}`)
+      )
+  )
+}
+
+export function baselineChanges(session: Session, key = 'required') {
+  const final = finalChecks(session, key)
+  const baseline = baselineChecks(session, key)
+  const result = { improved: 0, regressed: 0, compared: 0, unmatched: 0 }
+
+  for (const check of final) {
+    const previous = baseline.filter(
+      (candidate) =>
+        candidate.checkId === check.checkId &&
+        candidate.command === check.command &&
+        candidate.required === check.required
+    )
+    // Conflicting or duplicated baseline records cannot establish one earlier outcome.
+    if (previous.length !== 1) {
+      result.unmatched++
+      continue
+    }
+    result.compared++
+    if (!previous[0]!.passed && check.passed) result.improved++
+    if (previous[0]!.passed && !check.passed) result.regressed++
+  }
+
+  return result
 }
 
 export function checkResult(session: Session, filter: (check: VerificationRun) => boolean): string {
@@ -172,6 +229,18 @@ export function eligibleParticipant(session: Session): boolean {
     required.length > 0 &&
     required.every((check) => check.passed)
   )
+}
+
+export function eligibilityReason(session: Session): string | undefined {
+  if (!isFinal(session)) return 'Final verification pending'
+  if (session.status === 'aborted') return 'Run aborted'
+  const required = finalChecks(session, 'required')
+  const failed = required.filter((check) => !check.passed).length
+  if (failed) return `${failed} required ${failed === 1 ? 'check failed' : 'checks failed'}`
+  if (session.status !== 'completed' || session.exitCode !== 0)
+    return 'Agent did not complete successfully'
+  if (!required.length) return 'No final required checks recorded'
+  return undefined
 }
 
 export function recordedWinner(sessions: Session[], winnerId?: string, finalized = true) {
@@ -211,6 +280,13 @@ export function repeatedFailureFindings(session: Session): Finding[] {
   return session.findings.filter((finding) => finding.type === 'repeated_failure')
 }
 
+export function failureObservationReason(session: Session): string | undefined {
+  if (!session.capabilities.commandEvents) return 'Command capture unavailable'
+  if (session.findings.some((finding) => finding.type === 'analysis_limit'))
+    return 'Failure analysis limited'
+  return undefined
+}
+
 const known = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0
 
@@ -231,32 +307,61 @@ export function metricNumber(session: Session, key: MetricKey): number | undefin
                 : key === 'removed'
                   ? session.files.reduce((sum, file) => sum + file.deletions, 0)
                   : key === 'failures'
-                    ? repeatedFailureFindings(session).length
+                    ? repeatedFailureFindings(session).length ||
+                      (failureObservationReason(session) ? undefined : 0)
                     : undefined
 
+  if (key === 'tokens') {
+    if (!Number.isSafeInteger(value)) return undefined
+    const input = session.usage.inputTokens
+    const output = session.usage.outputTokens
+    if (known(input) && known(output) && known(value) && value < input + output) return undefined
+  }
   return known(value) ? value : undefined
+}
+
+function nativeModelIdentity(session: Session): string | undefined {
+  const model = session.usage.model ?? session.model
+  const source =
+    session.usage.modelSource ??
+    (!session.usage.model || session.usage.model === session.model
+      ? session.modelSource
+      : undefined)
+
+  return source === 'native' && model && !model.includes('[REDACTED]') ? model : undefined
 }
 
 export function comparabilityReason(a: Session, b: Session, key: MetricKey): string | undefined {
   if (!isFinal(a) || !isFinal(b)) return 'Run still active'
   if (metricNumber(a, key) === undefined || metricNumber(b, key) === undefined)
     return 'Measurement unavailable'
+  if (key === 'score') return checkComparabilityReason(a, b, 'all')
+  if (key === 'failures') return failureObservationReason(a) ?? failureObservationReason(b)
 
   if (key === 'tokens' || key === 'cost') {
     if (a.status !== 'completed' || b.status !== 'completed') return 'Usage may be incomplete'
     if (key === 'tokens') {
-      const aModel = a.usage.model ?? a.model
-      const bModel = b.usage.model ?? b.model
-      const aSource = a.usage.modelSource ?? a.modelSource
-      const bSource = b.usage.modelSource ?? b.modelSource
-
+      if ([a, b].some((session) => session.usage.tokenScope === 'main-agent'))
+        return 'Token accounting excludes subagents'
       if (
-        !aModel ||
-        aModel.includes('[REDACTED]') ||
-        aModel !== bModel ||
-        aSource !== 'native' ||
-        bSource !== 'native'
+        [a, b].some(
+          (session) =>
+            session.usage.tokenScope === 'unknown' ||
+            (session.agentId === 'claude' && session.usage.tokenScope !== 'session')
+        )
       )
+        return 'Token accounting scope unverified'
+      if (
+        [a, b].some(
+          (session) =>
+            session.usage.modelScope === 'mixed' || /mixed.model/i.test(session.usage.source ?? '')
+        )
+      )
+        return 'Usage combines multiple models'
+      if ([a, b].some((session) => session.usage.modelScope !== 'single'))
+        return 'Token model scope unverified'
+      const aModel = nativeModelIdentity(a)
+      if (!aModel || aModel !== nativeModelIdentity(b))
         return 'Token model identities differ or are unverified'
     } else {
       const aUsage = a.usage
@@ -320,13 +425,30 @@ export function metricHasDifferences(sessions: Session[], key: MetricKey): boole
   const signature = (session: Session) => {
     if (checkPredicate(key)) {
       const checks = finalChecks(session, key)
-      return `${checks.filter((check) => check.passed).length}/${checks.length}`
+      return JSON.stringify(
+        checks
+          .map((check) => [
+            check.checkId,
+            check.command,
+            check.required,
+            check.passed,
+            check.timedOut,
+            check.exitCode
+          ])
+          .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+      )
     }
     const value = metricNumber(session, key)
 
+    if (key === 'score')
+      return JSON.stringify([
+        value,
+        ...scoreComponents.map((component) => session.score?.[component.key])
+      ])
+
     if (key === 'cost') return `${value}|${session.usage.costType}|${session.usage.source}`
     if (key === 'tokens')
-      return `${value}|${session.usage.model ?? session.model}|${session.usage.modelSource ?? session.modelSource}`
+      return `${value}|${session.usage.model ?? session.model}|${session.usage.modelSource ?? session.modelSource}|${session.usage.modelScope}|${session.usage.tokenScope}`
     return String(value)
   }
 

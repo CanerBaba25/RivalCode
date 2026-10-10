@@ -147,6 +147,8 @@ function observe(type, payload, nativeId) {
         safe[key] = redact(value)
       if (key === 'failed' && typeof value === 'boolean') safe[key] = value
       if (key === 'exitCode' && typeof value === 'number') safe[key] = value
+      if (key === 'modelScope' && ['single', 'mixed', 'unknown'].includes(value)) safe[key] = value
+      if (key === 'tokenScope' && ['session', 'main-agent', 'unknown'].includes(value)) safe[key] = value
     }
     const identifier = redact(nativeId || 'observer-' + CAPTURE_SESSION + '-' + ++sequence)
     const record = {

@@ -1,5 +1,26 @@
+import type { Session } from '@rivalcode/shared'
 import { Icon, cost, costProvenance, number } from '../lib/common.js'
 import type { OverviewData } from '../lib/common.js'
+
+export function overviewFailureReason(session: Session): string {
+  if (session.error?.trim()) return session.error
+  if (session.status === 'aborted') return 'Run interrupted before completion'
+
+  const failedChecks = session.verification.filter(
+    (check) => check.phase === 'final' && check.required && !check.passed
+  ).length
+
+  if (failedChecks)
+    return `${number(failedChecks)} required final check${failedChecks === 1 ? '' : 's'} failed`
+
+  if (typeof session.exitCode === 'number' && session.exitCode !== 0)
+    return `Agent exited with code ${session.exitCode}`
+
+  if (session.findings.length)
+    return `${number(session.findings.length)} recorded finding${session.findings.length === 1 ? '' : 's'}`
+
+  return 'Run failed; inspect the captured events'
+}
 
 export function overviewRates(
   data: Pick<

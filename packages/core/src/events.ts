@@ -14,6 +14,7 @@ const outputKeys =
   /^(output|stdout|stderr|aggregated_output|toolOutput|tool_response|response|result|content|input|parameters|arguments)$/i
 const estimateSource = 'Estimated API-equivalent cost from configured pricing'
 const mixedModelCostSource = 'Cost unavailable: mixed-model usage lacks complete native accounting'
+const incompleteTokenCostSource = 'Cost unavailable: incomplete token accounting lacks native cost'
 const validTokens = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 const generatedId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i
@@ -21,6 +22,8 @@ const semanticEnums: Record<string, readonly string[]> = {
   semantics: ['incremental', 'cumulative'],
   costType: ['provider_reported', 'estimated', 'unknown'],
   modelSource: ['configured', 'native'],
+  modelScope: ['single', 'mixed', 'unknown'],
+  tokenScope: ['session', 'main-agent', 'unknown'],
   scope: ['turn', 'step', 'session'],
   severity: ['info', 'warning', 'error'],
   phase: ['setup', 'baseline', 'final'],
@@ -111,6 +114,8 @@ const payloadFields: Record<EventType, string[]> = {
     'totalTokens',
     'model',
     'modelSource',
+    'modelScope',
+    'tokenScope',
     'semantics',
     'scope',
     'source',
@@ -259,9 +264,16 @@ export function makeEvent(
           Object.entries(payload).filter(([key, value]) =>
             ['fatal', 'failed', 'timedOut', 'aborted', 'success'].includes(key)
               ? typeof value === 'boolean'
-              : ['severity', 'status', 'semantics', 'costType', 'modelSource', 'scope'].includes(
-                    key
-                  )
+              : [
+                    'severity',
+                    'status',
+                    'semantics',
+                    'costType',
+                    'modelSource',
+                    'modelScope',
+                    'tokenScope',
+                    'scope'
+                  ].includes(key)
                 ? typeof value === 'string' && semanticEnums[key]?.includes(value)
                 : [
                     'exitCode',
@@ -296,6 +308,7 @@ export function mergeUsage(
     ((previous.inputTokens ?? 0) > 0 || (previous.outputTokens ?? 0) > 0)
   const mixedModelCost =
     previous.source === mixedModelCostSource ||
+    (payload.modelScope === 'mixed' && (localEstimateBefore || previous.costUsd === undefined)) ||
     (modelChanged && (localEstimateBefore || previous.costUsd === undefined))
   let tokenCountsChanged = false
   let addedInput = 0
@@ -327,6 +340,21 @@ export function mergeUsage(
   if (typeof payload.model === 'string') {
     next.model = payload.model
     next.modelSource = payload.modelSource === 'configured' ? 'configured' : 'native'
+  }
+
+  if (
+    typeof payload.tokenScope === 'string' &&
+    semanticEnums.tokenScope!.includes(payload.tokenScope)
+  )
+    next.tokenScope = payload.tokenScope as NonNullable<UsageRecord['tokenScope']>
+
+  const incompleteTokens = next.tokenScope === 'main-agent' || next.tokenScope === 'unknown'
+  if (incompleteTokens && (next.costUsd === undefined || localEstimateBefore)) {
+    delete next.costUsd
+    next.costType = 'unknown'
+    next.source = incompleteTokenCostSource
+  } else if (!incompleteTokens && next.source === incompleteTokenCostSource) {
+    delete next.source
   }
 
   // Aggregate token totals cannot be repriced with the last model after a model switch.
@@ -377,6 +405,7 @@ export function mergeUsage(
   if (
     !incomingCost &&
     !mixedModelCost &&
+    !incompleteTokens &&
     localEstimate &&
     price &&
     next.inputTokens !== undefined &&

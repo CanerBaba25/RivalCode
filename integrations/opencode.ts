@@ -8,7 +8,17 @@ const ownership = '// rivalcode-owned:v1:opencode-observer\n'
 export const openCodePluginSource =
   ownership +
   collectorSource +
-  String.raw`export const RivalCodeObserver = async () => ({
+  String.raw`const observedModelHashes = new Set()
+function observeModel(providerID, modelID) {
+  if (typeof modelID !== 'string' || !modelID) return
+
+  const model = (typeof providerID === 'string' && providerID ? providerID + '/' : '') + modelID
+  if (observedModelHashes.size < 2)
+    observedModelHashes.add(createHash('sha256').update(model).digest('hex'))
+
+  observe('usage', { model, modelScope: observedModelHashes.size > 1 ? 'mixed' : 'single' })
+}
+export const RivalCodeObserver = async () => ({
   'tool.execute.before': async (input, output) => {
     hookTool('started', { tool: input.tool, callID: input.callID, args: output.args }, false)
   },
@@ -37,10 +47,14 @@ export const openCodePluginSource =
         permission: properties.reply || 'resolved',
         sessionId: sessionID
       })
+    else if (event.type === 'session.step.started') {
+      const model = properties.model || {}
+      observeModel(model.providerID, model.id)
+    }
     else if (event.type === 'message.updated') {
       const info = properties.info || properties.message || {}
       if (info.role === 'assistant' && typeof info.modelID === 'string')
-        observe('usage', { model: (info.providerID ? info.providerID + '/' : '') + info.modelID })
+        observeModel(info.providerID, info.modelID)
     }
     // New OpenCode event transport: same allowlisted observer semantics.
     else if (event.type === 'session.tool.started')

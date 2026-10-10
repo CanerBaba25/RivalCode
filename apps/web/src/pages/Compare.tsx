@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Page, Session } from '@rivalcode/shared'
 import {
   Agent,
@@ -19,6 +19,31 @@ import {
 import { Comparison } from '../components/Comparison.js'
 import { Filters, Pagination, useFilters } from '../components/Filters.js'
 
+const selectionKey = 'rivalcode.comparison-selection'
+const validId = /^[a-zA-Z0-9_-]{1,150}$/
+
+function savedSelection(): string[] {
+  try {
+    const saved: unknown = JSON.parse(sessionStorage.getItem(selectionKey) ?? '[]')
+    if (!Array.isArray(saved)) return []
+
+    return [
+      ...new Set(saved.filter((id): id is string => typeof id === 'string' && validId.test(id)))
+    ].slice(0, 4)
+  } catch {
+    return []
+  }
+}
+
+function rememberSelection(ids: string[]) {
+  try {
+    // Store identifiers only; prompts and session records stay in the local API.
+    sessionStorage.setItem(selectionKey, JSON.stringify(ids))
+  } catch {
+    // Browsers that restrict storage can still compare runs in the current view.
+  }
+}
+
 function useSession(id?: string) {
   return useApi<Session>(id ? `/api/sessions/${encodeURIComponent(id)}` : null)
 }
@@ -29,6 +54,19 @@ function SelectedComparison({ ids }: { ids: string[] }) {
   const selected = queries.slice(0, ids.length)
   const error = selected.find((query) => query.error)?.error ?? null
   const sessions = selected.flatMap((query) => (query.data ? [query.data] : []))
+  const [shareState, setShareState] = useState<'idle' | 'copied' | 'manual'>('idle')
+  const selection = ids.join(',')
+
+  useEffect(() => rememberSelection(selection.split(',')), [selection])
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      setShareState('copied')
+    } catch {
+      setShareState('manual')
+    }
+  }
 
   return (
     <>
@@ -36,13 +74,36 @@ function SelectedComparison({ ids }: { ids: string[] }) {
         eyebrow="RECORDED RUNS · SIDE BY SIDE"
         title="Compare sessions"
         actions={
-          <Link className="button secondary" to="/compare">
-            Change selection
-          </Link>
+          <>
+            <button className="button secondary" onClick={() => void copyLink()}>
+              Copy comparison link
+            </button>
+            <Link className="button secondary" to="/compare">
+              Change selection
+            </Link>
+          </>
         }
       >
         Inspect the trade-offs, choose a reference, and follow every result to its evidence.
       </PageHeading>
+      {shareState !== 'idle' && (
+        <div className="comparison-share" role="status">
+          <span>
+            {shareState === 'copied'
+              ? 'Comparison link copied.'
+              : 'Copy the comparison link below.'}{' '}
+            This link opens history on this machine.
+          </span>
+          {shareState === 'manual' && (
+            <input
+              aria-label="Comparison link"
+              readOnly
+              value={window.location.href}
+              onFocus={(event) => event.target.select()}
+            />
+          )}
+        </div>
+      )}
       <State
         loading={selected.some((query) => query.loading)}
         error={error}
@@ -56,15 +117,24 @@ function SelectedComparison({ ids }: { ids: string[] }) {
 function ComparisonPicker() {
   const filter = useFilters()
   const query = useApi<Page<Session>>(`/api/sessions?${filter.params}`)
-  const [selection, setSelection] = useState<Session[]>([])
+  const [selection, setSelection] = useState<string[]>(savedSelection)
+  const selectedQueries = [
+    useSession(selection[0]),
+    useSession(selection[1]),
+    useSession(selection[2]),
+    useSession(selection[3])
+  ].slice(0, selection.length)
+  const unavailable = selectedQueries.some((selected) => selected.error)
   const full = selection.length === 4
 
-  function toggle(session: Session) {
+  useEffect(() => rememberSelection(selection), [selection])
+
+  function toggle(id: string) {
     setSelection((current) =>
-      current.some((item) => item.id === session.id)
-        ? current.filter((item) => item.id !== session.id)
+      current.includes(id)
+        ? current.filter((item) => item !== id)
         : current.length < 4
-          ? [...current, session]
+          ? [...current, id]
           : current
     )
   }
@@ -72,7 +142,8 @@ function ComparisonPicker() {
   return (
     <>
       <PageHeading eyebrow="MAKE THE DIFFERENCES VISIBLE" title="Compare sessions">
-        Select two to four recorded runs. Your selection stays with you across filters and pages.
+        Select two to four recorded runs. Your selection stays across filters and pages; tab storage
+        retains it through reloads and Change selection when available.
       </PageHeading>
       <div className="selection-toolbar" aria-label="Comparison selection">
         <div>
@@ -87,35 +158,49 @@ function ComparisonPicker() {
               Clear selection
             </button>
           )}
-          {selection.length >= 2 ? (
-            <Link
-              className="button primary"
-              to={`/compare/${selection.map((session) => encodeURIComponent(session.id)).join(',')}`}
-            >
+          {selection.length >= 2 && !unavailable ? (
+            <Link className="button primary" to={`/compare/${selection.join(',')}`}>
               Compare {selection.length} runs
               <Icon name="arrow" size={16} />
             </Link>
           ) : (
             <button className="button primary" disabled>
-              Select at least 2 runs
+              {unavailable ? 'Remove unavailable runs' : 'Select at least 2 runs'}
             </button>
           )}
         </div>
         {!!selection.length && (
           <div className="selection-chips">
-            {selection.map((session) => (
-              <button
-                key={session.id}
-                onClick={() => toggle(session)}
-                aria-label={`Remove ${names[session.agentId]} ${session.id} from selection`}
-              >
-                {names[session.agentId]} <span className="mono">{shortId(session.id)}</span>
-                <Icon name="close" size={13} />
-              </button>
-            ))}
+            {selection.map((id, index) => {
+              const selected = selectedQueries[index]
+              const agent = selected?.data ? names[selected.data.agentId] : 'Run'
+
+              return (
+                <button
+                  key={id}
+                  onClick={() => toggle(id)}
+                  aria-label={`Remove ${agent} ${id} from selection`}
+                >
+                  {agent} <span className="mono">{shortId(id)}</span>
+                  {selected?.error && <span>Unavailable</span>}
+                  <Icon name="close" size={13} />
+                </button>
+              )
+            })}
           </div>
         )}
       </div>
+      {unavailable && (
+        <div className="comparison-share" role="alert">
+          <span>A selected run could not be loaded. Remove it or retry before comparing.</span>
+          <button
+            className="button secondary"
+            onClick={() => selectedQueries.forEach((selected) => selected.retry())}
+          >
+            Retry selected runs
+          </button>
+        </div>
+      )}
       <Filters state={filter} />
       <State {...query} />
       {query.data && (
@@ -135,7 +220,7 @@ function ComparisonPicker() {
                 </thead>
                 <tbody>
                   {query.data.items.map((session) => {
-                    const checked = selection.some((item) => item.id === session.id)
+                    const checked = selection.includes(session.id)
 
                     return (
                       <tr key={session.id} className={checked ? 'selected-run' : undefined}>
@@ -144,7 +229,7 @@ function ComparisonPicker() {
                             type="checkbox"
                             checked={checked}
                             disabled={full && !checked}
-                            onChange={() => toggle(session)}
+                            onChange={() => toggle(session.id)}
                             aria-label={`Select ${names[session.agentId]} ${session.id}`}
                           />
                         </td>
@@ -197,7 +282,7 @@ export function Compare({ ids }: { ids?: string }) {
     selected.length < 2 ||
     selected.length > 4 ||
     new Set(selected).size !== selected.length ||
-    selected.some((id) => !/^[a-zA-Z0-9_-]{1,150}$/.test(id))
+    selected.some((id) => !validId.test(id))
   )
     return (
       <Empty title="Choose two to four different runs">

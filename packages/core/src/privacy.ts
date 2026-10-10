@@ -38,7 +38,13 @@ export function redactSession(session: Session, redact: Redactor, config?: Rival
     usage: {
       ...safe.usage,
       costType: session.usage.costType,
-      modelSource: session.usage.modelSource
+      modelSource: session.usage.modelSource,
+      modelScope: ['single', 'mixed', 'unknown'].includes(session.usage.modelScope ?? '')
+        ? session.usage.modelScope
+        : undefined,
+      tokenScope: ['session', 'main-agent', 'unknown'].includes(session.usage.tokenScope ?? '')
+        ? session.usage.tokenScope
+        : undefined
     },
     files: safe.files.map((file, index) => ({ ...file, status: session.files[index]!.status })),
     findings: safe.findings.map((finding, index) => {

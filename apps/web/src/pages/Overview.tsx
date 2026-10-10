@@ -15,7 +15,12 @@ import {
 import type { OverviewData } from '../lib/common.js'
 import { SessionTable } from '../components/SessionTable.js'
 import { ActiveRunsFocus, LatestBattleFocus, OverviewActions } from '../components/OverviewFocus.js'
-import { OutcomePanel, UsageCoverage, overviewRates } from '../components/OverviewInsights.js'
+import {
+  OutcomePanel,
+  UsageCoverage,
+  overviewFailureReason,
+  overviewRates
+} from '../components/OverviewInsights.js'
 
 export function Overview() {
   const query = useApi<OverviewData>('/api/overview')
@@ -128,8 +133,7 @@ export function Overview() {
                       <div>
                         <strong>{session.task ?? 'Task prompt not stored'}</strong>
                         <span className="subtext">
-                          {names[session.agentId]} ·{' '}
-                          {session.error ?? `${session.findings.length} findings`}
+                          {names[session.agentId]} · {overviewFailureReason(session)}
                         </span>
                         {session.demo && <span className="demo-badge">Explicit demo</span>}
                       </div>

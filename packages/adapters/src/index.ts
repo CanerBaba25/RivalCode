@@ -11,11 +11,13 @@ import type {
 } from '@rivalcode/shared'
 import { detectAgent } from './detection.js'
 import {
+  aggregateClaudeUsage,
   captureEvent,
   errorMessage,
   event,
   fields,
   list,
+  modelUsageScope,
   number,
   object,
   text,
@@ -387,12 +389,20 @@ export class ClaudeAdapter extends NativeAdapter {
       const baseInput = number(value.input_tokens)
       const input =
         baseInput === undefined ? undefined : baseInput + (cached ?? 0) + (creation ?? 0)
+      const aggregate = aggregateClaudeUsage(raw.modelUsage, raw.usage)
       const result: EventInput[] = [
         event(
           'usage',
           {
-            ...usage(input, number(value.output_tokens), cached),
+            ...(aggregate ?? usage(input, number(value.output_tokens), cached)),
+            tokenScope: aggregate ? 'session' : 'main-agent',
             model: this.model,
+            ...modelUsageScope(raw.modelUsage, [
+              'inputTokens',
+              'outputTokens',
+              'cacheReadInputTokens',
+              'cacheCreationInputTokens'
+            ]),
             semantics: 'cumulative',
             scope: 'session',
             source: 'claude_cli'
@@ -557,6 +567,12 @@ export class GeminiAdapter extends NativeAdapter {
               number(stats.total_tokens)
             ),
             model: this.model,
+            ...modelUsageScope(stats.models, [
+              'input_tokens',
+              'output_tokens',
+              'cached',
+              'total_tokens'
+            ]),
             semantics: 'cumulative',
             scope: 'session'
           },

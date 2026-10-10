@@ -63,5 +63,16 @@ unknown, and token/cost differences require compatible model or accounting
 provenance. The overview reports active runs, finished-run success rates and
 measurement coverage separately, so missing data does not imply zero usage.
 
+Comparison selections keep only session identifiers in tab-local browser storage.
+Editing or reloading a comparison preserves the selection when storage is
+available; blocked storage still permits current-view comparisons. Copied links
+refer to the local server's history. Baseline changes match exact check IDs and
+commands, and missing command capture cannot establish zero repeated failures.
+Native model scope is persisted independently of cost provenance; legacy or
+mixed-model token totals do not receive comparison deltas.
+Claude token accounting separately records session-wide aggregates or a
+main-agent-only fallback. A fallback or an older record without accounting scope
+cannot establish a complete token comparison, even when native model IDs match.
+
 See [scoring](scoring.md) for deterministic calculations and [adapters](adapters.md)
 for fidelity and provider accounting limits.

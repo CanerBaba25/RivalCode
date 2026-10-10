@@ -92,6 +92,7 @@ function App() {
                   key={key}
                   to={to ?? '/'}
                   className={`nav-link ${section === key ? 'active' : ''}`}
+                  aria-current={section === key ? 'page' : undefined}
                 >
                   <Icon name={icon ?? 'grid'} />
                   <span>{title}</span>

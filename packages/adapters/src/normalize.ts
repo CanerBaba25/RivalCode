@@ -1,4 +1,4 @@
-import type { EventInput, EventType } from '@rivalcode/shared'
+import type { EventInput, EventType, UsageRecord } from '@rivalcode/shared'
 
 export function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -14,6 +14,102 @@ export function text(value: unknown): string | undefined {
 export function number(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
 }
+
+/** Aggregate headers do not prove which models contributed to the reported totals. */
+export function modelUsageScope(
+  value: unknown,
+  tokenKeys: readonly string[]
+): Pick<UsageRecord, 'modelScope' | 'model'> {
+  let active = 0
+  let ambiguous = false
+  let activeModel: string | undefined
+
+  for (const [model, entry] of Object.entries(object(value))) {
+    const counts = tokenKeys.map((key) => object(entry)[key])
+    const complete = counts
+      .slice(0, 2)
+      .every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
+    const valid = counts.every(
+      (count) => count === undefined || (Number.isSafeInteger(count) && Number(count) >= 0)
+    )
+    if (!model || !complete || !valid) ambiguous = true
+
+    if (
+      model &&
+      (counts.some((count) => typeof count === 'number' && Number.isFinite(count) && count > 0) ||
+        (number(object(entry).costUSD) ?? 0) > 0)
+    ) {
+      activeModel = model
+      if (++active === 2) return { modelScope: 'mixed' }
+    }
+  }
+
+  return active === 1 && !ambiguous
+    ? { modelScope: 'single', model: activeModel }
+    : { modelScope: 'unknown' }
+}
+
+/** Claude's result.usage excludes subagents; only a complete modelUsage map covers the tree. */
+export function aggregateClaudeUsage(
+  value: unknown,
+  mainAgentUsage: unknown
+):
+  | Pick<UsageRecord, 'inputTokens' | 'outputTokens' | 'cachedInputTokens' | 'totalTokens'>
+  | undefined {
+  const entries = Object.entries(object(value))
+  if (entries.length === 0) return undefined
+
+  const totals = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0
+  }
+  const keys = Object.keys(totals) as (keyof typeof totals)[]
+
+  for (const [model, entry] of entries) {
+    if (!model.trim()) return undefined
+    const counts = object(entry)
+
+    for (const key of keys) {
+      const count = counts[key]
+      if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return undefined
+
+      const sum = totals[key] + count
+      if (!Number.isSafeInteger(sum)) return undefined
+      totals[key] = sum
+    }
+  }
+
+  // A purported whole-tree map cannot account for less than the known main-agent counters.
+  const main = object(mainAgentUsage)
+  const mainKeys = {
+    inputTokens: 'input_tokens',
+    outputTokens: 'output_tokens',
+    cacheReadInputTokens: 'cache_read_input_tokens',
+    cacheCreationInputTokens: 'cache_creation_input_tokens'
+  }
+
+  for (const key of keys) {
+    const count = main[mainKeys[key]]
+    if (typeof count === 'number' && Number.isSafeInteger(count) && count > totals[key])
+      return undefined
+  }
+
+  const inputTokens =
+    totals.inputTokens + totals.cacheReadInputTokens + totals.cacheCreationInputTokens
+  // outputTokens already includes thinkingTokens in the official modelUsage contract.
+  const totalTokens = inputTokens + totals.outputTokens
+  if (!Number.isSafeInteger(inputTokens) || !Number.isSafeInteger(totalTokens)) return undefined
+
+  return {
+    inputTokens,
+    outputTokens: totals.outputTokens,
+    cachedInputTokens: totals.cacheReadInputTokens,
+    totalTokens
+  }
+}
+
 export function fields(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined))
 }
@@ -149,7 +245,13 @@ export function captureEvent(raw: Record<string, unknown>): EventInput[] | null 
     message: text(payload.message),
     permission: text(payload.permission),
     sessionId: text(payload.sessionId),
-    model: text(payload.model)
+    model: text(payload.model),
+    modelScope: ['single', 'mixed', 'unknown'].includes(String(payload.modelScope ?? ''))
+      ? text(payload.modelScope)
+      : undefined,
+    tokenScope: ['session', 'main-agent', 'unknown'].includes(String(payload.tokenScope ?? ''))
+      ? text(payload.tokenScope)
+      : undefined
   })
   return [event(raw.type as EventType, safe, raw, text(raw.nativeId), 'hook')]
 }

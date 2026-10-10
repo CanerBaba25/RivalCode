@@ -17,10 +17,15 @@ import {
 } from '../lib/common.js'
 import {
   bestParticipants,
+  baselineChanges,
+  baselineChecks,
+  checkComparabilityReason,
   checkPredicate,
   checkResult,
   comparisonMetrics,
   eligibleParticipant,
+  eligibilityReason,
+  failureObservationReason,
   finalChecks,
   isFinal,
   metricDifference,
@@ -50,13 +55,17 @@ export interface ComparisonProps {
 
 export type EvidenceSelection = { session: Session; metric: string }
 
-function participantLabel(session: Session, sessions: Session[]): string {
+function participantIdentifier(session: Session, sessions: Session[]): string {
   const abbreviated = shortId(session.id)
   const unique = !sessions.some(
     (other) => other.id !== session.id && shortId(other.id) === abbreviated
   )
 
-  return `${names[session.agentId]} · ${unique ? abbreviated : session.id}`
+  return unique ? abbreviated : session.id
+}
+
+function participantLabel(session: Session, sessions: Session[]): string {
+  return `${names[session.agentId]} · ${participantIdentifier(session, sessions)}`
 }
 
 function metricValue(session: Session, metric: ComparisonMetric): React.ReactNode {
@@ -79,9 +88,10 @@ function metricValue(session: Session, metric: ComparisonMetric): React.ReactNod
 
   const value = metricNumber(session, metric.key)
   if (metric.key === 'score') return <Score value={value} />
-  if (metric.key === 'duration')
-    return value !== undefined && value < 10000 ? `${(value / 1000).toFixed(2)}s` : duration(value)
+  if (metric.key === 'duration') return duration(value)
   if (metric.key === 'cost') return cost(value, session.usage.costType)
+  if (metric.key === 'failures' && value !== undefined && failureObservationReason(session))
+    return `≥${number(value)}`
   return number(value)
 }
 
@@ -94,8 +104,17 @@ function Difference({
   reference: Session
   metric: ComparisonMetric
 }) {
-  if (!metric.direction) return null
   if (session.id === reference.id) return <span className="metric-delta neutral">Reference</span>
+
+  if (checkPredicate(metric.key)) {
+    const reason = checkComparabilityReason(session, reference, metric.key)
+    return (
+      <span className={`metric-delta ${reason ? 'unavailable' : 'neutral'}`}>
+        {reason ?? 'Same check definitions'}
+      </span>
+    )
+  }
+  if (!metric.direction) return null
 
   const difference = metricDifference(session, reference, metric.key)
   if (difference.value === undefined)
@@ -106,6 +125,7 @@ function Difference({
         aria-label={`Not comparable: ${difference.reason}`}
       >
         Not comparable
+        <span className="subtext">{difference.reason}</span>
       </span>
     )
 
@@ -174,8 +194,11 @@ export function Comparison({
       session.repositoryId === sessions[0]?.repositoryId &&
       session.baseCommit === sessions[0]?.baseCommit &&
       session.task !== null &&
+      !/\[REDACTED\]/.test(session.task) &&
       session.task === sessions[0]?.task &&
-      requiredCheckSignature(session) === requiredCheckSignature(sessions[0]!)
+      requiredCheckSignature(session) === requiredCheckSignature(sessions[0]!) &&
+      checkComparabilityReason(session, sessions[0]!, 'all') === undefined &&
+      !checkComparabilityReason(session, sessions[0]!, 'required')
   )
   const metricBadges = finalized && (ranking || sameConditions)
 
@@ -197,7 +220,7 @@ export function Comparison({
           <Icon name="info" size={18} />
           <p>
             {sameConditions
-              ? 'These runs share the recorded repository, base commit, task and required checks. Each retains its original execution conditions.'
+              ? 'These runs share the recorded repository, base commit, task and final check definitions. Each retains its original execution conditions.'
               : 'These historical runs may use different tasks, repositories, base commits or checks. Their measurements are observations, not a controlled ranking.'}{' '}
             Selecting a reference changes the displayed differences only.
           </p>
@@ -211,41 +234,55 @@ export function Comparison({
       )}
 
       <div className="comparison-summary" aria-label="Participant summaries">
-        {sessions.map((session) => (
-          <article
-            key={session.id}
-            className={`participant-card panel ${winner?.id === session.id ? 'winner-column' : ''} ${reference.id === session.id ? 'reference-column' : ''}`}
-          >
-            <div className="participant-card-heading">
-              <Agent id={session.agentId} />
-              <Status status={session.status} />
-            </div>
-            <span className="participant-id mono">{shortId(session.id)}</span>
-            <span className="subtext">{modelLabel(session.model, session.modelSource)}</span>
-            <div className="participant-card-metrics">
-              <div>
-                <span>Score</span>
-                <Score value={session.score?.total} />
-              </div>
-              <div>
-                <span>Required checks</span>
-                <strong>
-                  {requiredSummary(session)}
-                  {finalChecks(session, 'required').length > 0 ? ' passed' : ''}
-                </strong>
-              </div>
-            </div>
-            <span className="rank-label">{rankLabel(session)}</span>
-            {reference.id === session.id && <span className="mini-label">REFERENCE RUN</span>}
-            <Link
-              className="text-link"
-              to={`/sessions/${session.id}`}
-              aria-label={`Replay ${participantLabel(session, sessions)}`}
+        {sessions.map((session) => {
+          const changes = baselineChanges(session)
+          return (
+            <article
+              key={session.id}
+              className={`participant-card panel ${winner?.id === session.id ? 'winner-column' : ''} ${reference.id === session.id ? 'reference-column' : ''}`}
             >
-              Replay run <Icon name="arrow" size={16} />
-            </Link>
-          </article>
-        ))}
+              <div className="participant-card-heading">
+                <Agent id={session.agentId} />
+                <Status status={session.status} />
+              </div>
+              <span className="participant-id mono">
+                {participantIdentifier(session, sessions)}
+              </span>
+              <span className="subtext">{modelLabel(session.model, session.modelSource)}</span>
+              <div className="participant-card-metrics">
+                <div>
+                  <span>Score</span>
+                  <Score value={session.score?.total} />
+                </div>
+                <div>
+                  <span>Required checks</span>
+                  <strong>
+                    {requiredSummary(session)}
+                    {finalChecks(session, 'required').length > 0 ? ' passed' : ''}
+                  </strong>
+                </div>
+              </div>
+              <span className="subtext">
+                {eligibilityReason(session) ?? 'Eligible recorded run'}
+              </span>
+              {changes.compared > 0 && (
+                <span className="subtext">
+                  Required baseline: {changes.improved} improved · {changes.regressed} regressed
+                  {changes.unmatched > 0 && ` · ${changes.unmatched} unmatched`}
+                </span>
+              )}
+              <span className="rank-label">{rankLabel(session)}</span>
+              {reference.id === session.id && <span className="mini-label">REFERENCE RUN</span>}
+              <Link
+                className="text-link"
+                to={`/sessions/${session.id}`}
+                aria-label={`Replay ${participantLabel(session, sessions)}`}
+              >
+                Replay run <Icon name="arrow" size={16} />
+              </Link>
+            </article>
+          )
+        })}
       </div>
 
       <div className="comparison-panel panel">
@@ -314,7 +351,9 @@ export function Comparison({
                     className={`${winner?.id === session.id ? 'winner-column' : ''} ${reference.id === session.id ? 'reference-column' : ''}`}
                   >
                     <Agent id={session.agentId} />
-                    <span className="participant-id mono">{shortId(session.id)}</span>
+                    <span className="participant-id mono">
+                      {participantIdentifier(session, sessions)}
+                    </span>
                     <span className="rank-label">{rankLabel(session)}</span>
                     {reference.id === session.id && <span className="mini-label">REFERENCE</span>}
                   </th>
@@ -422,7 +461,11 @@ export function Comparison({
               <h3>{participantLabel(session, sessions)}</h3>
               {scoreComponents.map((component) => {
                 const value = session.score?.[component.key]
-                const available = typeof value === 'number' && Number.isFinite(value)
+                const available =
+                  typeof value === 'number' &&
+                  Number.isFinite(value) &&
+                  value >= 0 &&
+                  value <= component.max
                 const width = available
                   ? Math.max(0, Math.min(100, (value / component.max) * 100))
                   : 0
@@ -475,11 +518,35 @@ export function Comparison({
 export function BattleEvidence({ selection }: { selection: EvidenceSelection }) {
   const { session, metric } = selection
   const predicate = checkPredicate(metric)
+  const previousChecks = predicate ? baselineChecks(session, metric) : []
+  const changes = predicate ? baselineChanges(session, metric) : undefined
 
   return (
     <>
       {predicate ? (
-        <Verification runs={finalChecks(session, metric)} />
+        <>
+          <p className="muted">Independent final verification</p>
+          <Verification runs={finalChecks(session, metric)} />
+          {previousChecks.length > 0 ? (
+            <details>
+              <summary>
+                Matching baseline checks · {changes?.improved} improved · {changes?.regressed}{' '}
+                regressed
+              </summary>
+              <p className="muted">
+                Changes compare the same check ID and command before and after the agent run.
+                {changes?.unmatched
+                  ? ` ${changes.unmatched} final checks have no unique matching baseline.`
+                  : ''}
+              </p>
+              <Verification runs={previousChecks} />
+            </details>
+          ) : (
+            <p className="muted">
+              No matching baseline checks recorded. A before-and-after outcome is unavailable.
+            </p>
+          )}
+        </>
       ) : ['files', 'added', 'removed'].includes(metric) ? (
         <>
           <div className="table-wrap">
@@ -514,23 +581,42 @@ export function BattleEvidence({ selection }: { selection: EvidenceSelection }) 
           </div>
           <div>
             <dt>Finished</dt>
-            <dd>{session.finishedAt ? date(session.finishedAt) : 'Still active'}</dd>
+            <dd>
+              {session.finishedAt
+                ? date(session.finishedAt)
+                : isFinal(session)
+                  ? 'Finish time unavailable'
+                  : 'Still active'}
+            </dd>
           </div>
           <div>
             <dt>Measured duration</dt>
-            <dd>{duration(session.durationMs)}</dd>
+            <dd>
+              {duration(metricNumber(session, 'duration'))} ({number(session.durationMs)} ms)
+            </dd>
           </div>
         </dl>
       ) : metric === 'failures' ? (
-        <Findings
-          findings={repeatedFailureFindings(session)}
-          inspect={() => {
-            window.location.href = `/sessions/${session.id}`
-          }}
-        />
+        <>
+          {failureObservationReason(session) && (
+            <p className="muted">
+              {failureObservationReason(session)}. Recorded findings are lower bounds and cannot
+              establish zero repeated failures.
+            </p>
+          )}
+          <Findings
+            findings={repeatedFailureFindings(session)}
+            inspect={() => {
+              window.location.href = `/sessions/${session.id}`
+            }}
+          />
+        </>
       ) : metric === 'score' ? (
         <>
           <Score value={session.score?.total} />
+          {!session.score && (
+            <p className="muted">No deterministic score was recorded for this run.</p>
+          )}
           <ul className="score-explanations">
             {session.score?.explanation.map((explanation, index) => (
               <li key={index}>{explanation}</li>
@@ -557,8 +643,22 @@ export function BattleEvidence({ selection }: { selection: EvidenceSelection }) 
             <dd>{number(session.usage.outputTokens)}</dd>
           </div>
           <div>
-            <dt>Total tokens</dt>
+            <dt>Reported total tokens</dt>
             <dd>{number(session.usage.totalTokens)}</dd>
+          </div>
+          <div>
+            <dt>Token accounting scope</dt>
+            <dd>
+              {session.usage.tokenScope === 'session'
+                ? 'Whole session'
+                : session.usage.tokenScope === 'main-agent'
+                  ? 'Main agent only (subagents excluded)'
+                  : session.usage.tokenScope === undefined &&
+                      session.agentId !== 'claude' &&
+                      session.agentId !== 'demo'
+                    ? 'Provider-reported totals'
+                    : 'Unverified accounting scope'}
+            </dd>
           </div>
           <div>
             <dt>Cost</dt>
@@ -571,6 +671,16 @@ export function BattleEvidence({ selection }: { selection: EvidenceSelection }) 
           <div>
             <dt>Pricing model</dt>
             <dd>{modelLabel(session.usage.model, session.usage.modelSource)}</dd>
+          </div>
+          <div>
+            <dt>Token model scope</dt>
+            <dd>
+              {session.usage.modelScope === 'single'
+                ? 'Single observed model'
+                : session.usage.modelScope === 'mixed'
+                  ? 'Multiple observed models'
+                  : 'Unverified scope'}
+            </dd>
           </div>
           <div>
             <dt>Source</dt>

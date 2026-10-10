@@ -157,11 +157,51 @@ async function executeRun(
   let evidenceLimited = false
   let nativeFailure: string | undefined
   let eventDescriptor: number | undefined
+  const observedModels = new Set<string>()
+  let unscopedUsage = false
+  let nativeMixedModels = false
+  const modelScope = (): NonNullable<Session['usage']['modelScope']> =>
+    nativeMixedModels || observedModels.size > 1
+      ? 'mixed'
+      : observedModels.size === 1 && !unscopedUsage
+        ? 'single'
+        : 'unknown'
 
   const emit = (input: EventInput) => {
+    const rawPayload = input?.payload
+    const nativeModelHash =
+      rawPayload &&
+      typeof rawPayload === 'object' &&
+      !Array.isArray(rawPayload) &&
+      ['usage', 'cost', 'session_started'].includes(input.type) &&
+      input.source !== 'rivalcode' &&
+      input.payload.modelSource !== 'configured' &&
+      typeof input.payload.model === 'string' &&
+      input.payload.model.length > 0 &&
+      observedModels.size < 2
+        ? createHash('sha256').update(input.payload.model).digest('hex')
+        : undefined
     const event = makeEvent(input, id, options.agent, config, redact)
 
     if (!event) return
+
+    const accounting = event.type === 'usage' || event.type === 'cost'
+
+    if (accounting && event.payload.modelScope === 'mixed') nativeMixedModels = true
+    if (accounting && event.payload.modelScope === 'unknown') unscopedUsage = true
+    if (nativeModelHash) {
+      // Distinct native identities can have the same redacted display label.
+      observedModels.add(nativeModelHash)
+    }
+
+    if (
+      accounting &&
+      observedModels.size === 0 &&
+      ['inputTokens', 'outputTokens', 'totalTokens', 'costUsd'].some(
+        (key) => typeof event.payload[key] === 'number' && Number.isFinite(event.payload[key])
+      )
+    )
+      unscopedUsage = true
 
     if (event.payload.fatal === true) {
       nativeFailure ??= String(
@@ -173,6 +213,7 @@ async function executeRun(
 
     if (event.type === 'usage' || event.type === 'cost') {
       session.usage = mergeUsage(session.usage, event.payload, config)
+      session.usage.modelScope = modelScope()
       if (session.usage.model) session.model = session.usage.model
       session.modelSource = session.usage.modelSource
       store.saveSession(redactSession(session, redact))
@@ -181,7 +222,12 @@ async function executeRun(
     if (event.type === 'session_started' && typeof event.payload.model === 'string') {
       session.model = event.payload.model
       session.modelSource = 'native'
-      session.usage = { ...session.usage, model: session.model, modelSource: 'native' }
+      session.usage = mergeUsage(
+        session.usage,
+        { model: session.model, modelSource: 'native' },
+        config
+      )
+      session.usage.modelScope = modelScope()
       store.saveSession(redactSession(session, redact))
     }
 
@@ -325,7 +371,12 @@ async function executeRun(
     session.model = config.agents[options.agent]?.model
     if (session.model && !session.usage.model) {
       session.modelSource = 'configured'
-      session.usage = { ...session.usage, model: session.model, modelSource: 'configured' }
+      session.usage = {
+        ...session.usage,
+        model: session.model,
+        modelSource: 'configured',
+        modelScope: 'unknown'
+      }
     }
     store.saveSession(redactSession(session, redact))
 
@@ -623,6 +674,22 @@ export async function runBattle(options: BattleOptions): Promise<Battle> {
 
   const redact = await createRedactor(root, config)
   const store = new Store(root)
+
+  try {
+    return await executeBattle(options, root, baseCommit, config, redact, store)
+  } finally {
+    store.close()
+  }
+}
+
+async function executeBattle(
+  options: BattleOptions,
+  root: string,
+  baseCommit: string,
+  config: RivalConfig,
+  redact: (value: unknown) => unknown,
+  store: Store
+): Promise<Battle> {
   const repository = await repositoryRecord(root, redact)
   store.upsertRepository(repository)
 
@@ -765,7 +832,6 @@ export async function runBattle(options: BattleOptions): Promise<Battle> {
   } finally {
     battle.finishedAt = new Date().toISOString()
     store.saveBattle(redactBattle(battle, redact))
-    store.close()
   }
 
   return redactBattle(battle, redact)

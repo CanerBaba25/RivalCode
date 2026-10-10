@@ -122,6 +122,7 @@ export function ActiveRunsFocus({ active }: { active: number }) {
                   <span className="subtext">
                     {session.repositoryName} · Started {date(session.startedAt)}
                   </span>
+                  {session.demo && <span className="demo-badge">Explicit demo</span>}
                 </div>
                 <Status status={session.status} />
               </Link>
@@ -130,7 +131,15 @@ export function ActiveRunsFocus({ active }: { active: number }) {
           {!loading && !error && !sessions.length && (
             <p className="muted">Run status is updating.</p>
           )}
-          {active > sessions.length && sessions.length > 0 && (
+          {loading && sessions.length > 0 && (
+            <p className="subtext" role="status">
+              Refreshing active run details…
+            </p>
+          )}
+          {!loading && error && (
+            <p className="subtext">Some active statuses are unavailable or out of date.</p>
+          )}
+          {!loading && !error && active > sessions.length && sessions.length > 0 && (
             <p className="subtext">Showing the {sessions.length} most recent active runs.</p>
           )}
         </>
@@ -150,14 +159,21 @@ export function ActiveRunsFocus({ active }: { active: number }) {
 
 export function OverviewActions({ data }: { data: OverviewData }) {
   const recent = data.recentSessions[0]
+  const recentActive = recent && ['preparing', 'running', 'verifying'].includes(recent.status)
   const failure = data.recentFailures[0]
   const actions = [
     {
       to: recent ? `/sessions/${recent.id}` : '/agents',
       icon: recent ? 'sessions' : 'agents',
-      title: recent ? 'Replay your latest run' : 'Check available agents',
+      title: recent
+        ? recentActive
+          ? 'Follow your latest run'
+          : 'Replay your latest run'
+        : 'Check available agents',
       detail: recent
-        ? 'Follow the recorded events and final changes.'
+        ? recentActive
+          ? 'Watch captured events and current verification status.'
+          : 'Follow the recorded events and final changes.'
         : 'See installed adapters and capture capabilities.'
     },
     {

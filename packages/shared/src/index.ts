@@ -88,6 +88,8 @@ export interface UsageRecord {
   totalTokens?: number
   model?: string
   modelSource?: 'configured' | 'native'
+  modelScope?: 'single' | 'mixed' | 'unknown'
+  tokenScope?: 'session' | 'main-agent' | 'unknown'
   costUsd?: number
   costType?: 'provider_reported' | 'estimated' | 'unknown'
   source?: string

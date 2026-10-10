@@ -5,13 +5,13 @@ allowlisted normalization. No agent installation or paid model access is require
 for local unit/fixture/integration validation. CLI execution requires your installed agent and
 its existing authentication. A readiness probe does not prove model entitlement.
 
-| Agent       | Integration                                                                    | Accounting                                                                  |
-| ----------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
-| Codex       | `codex exec --json`, prompt on stdin; workspace-write, no unresolved approvals | Native turn token counts; dollar cost/model may be unavailable              |
-| Claude Code | Noninteractive `-p`, verbose `stream-json`                                     | Terminal cumulative usage; native client cost is explicitly estimated       |
-| Gemini CLI  | Noninteractive prompt, `stream-json`                                           | Final token statistics; monetary cost unavailable unless configured pricing |
-| OpenCode    | `run --format json` plus a temporary project observer plugin                   | Step tokens and native API-equivalent cost estimate; invoice not implied    |
-| Demo Agent  | Explicit `--demo`, deterministic local edit and real Node tests                | No simulated model, tokens or costs                                         |
+| Agent       | Integration                                                                    | Accounting                                                                                |
+| ----------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| Codex       | `codex exec --json`, prompt on stdin; workspace-write, no unresolved approvals | Native turn token counts; dollar cost/model may be unavailable                            |
+| Claude Code | Noninteractive `-p`, verbose `stream-json`                                     | Validated per-model session totals; labeled main-agent fallback; client cost is estimated |
+| Gemini CLI  | Noninteractive prompt, `stream-json`                                           | Final token statistics; monetary cost unavailable unless configured pricing               |
+| OpenCode    | `run --format json` plus a temporary project observer plugin                   | Step tokens and native API-equivalent cost estimate; invoice not implied                  |
+| Demo Agent  | Explicit `--demo`, deterministic local edit and real Node tests                | No simulated model, tokens or costs                                                       |
 
 Native tool/command completion is parsed where exposed. The OpenCode observer
 records documented tool lifecycle events without changing decisions, adding
@@ -29,6 +29,22 @@ than a provider invoice. Configured pricing cannot reconstruct a mixed-model
 total without accounting for each model; such totals remain unknown. Reasoning
 token counts can contribute to usage, but reasoning content is never captured.
 
+Usage records include an observed `modelScope`: `single`, `mixed`, or `unknown`.
+Token differences require single-model accounting and matching verified native
+identities. Provider totals with several models retain their reported values,
+but cannot establish a single-model token comparison. Older records without
+scope and aggregate reports without sufficient model evidence stay unverified.
+Model identities are compared before display redaction, so redacted names cannot
+turn distinct models into a false match.
+
+Claude's result-level `usage` excludes subagents. When its complete `modelUsage`
+map is available, RivalCode sums input, output, cache-read and cache-creation
+counts across that map, including subagent usage. Otherwise it preserves the
+reported main-agent counts and labels `tokenScope` as `main-agent`; these counts
+cannot establish whole-session token differences or a fewest-token badge.
+Older Claude records without accounting scope also remain incomparable.
+Native client costs retain their separate provenance and may include subagents.
+
 Codex/Claude native login status can confirm credentials are configured. Gemini
 has no documented standalone auth-status command, so configuration presence is
 reported as unverified. OpenCode readiness follows available documented CLI
@@ -42,6 +58,7 @@ tests require explicit opt-in and separately supplied vendor authentication.
 Sources: [Codex noninteractive mode](https://learn.chatgpt.com/docs/non-interactive-mode),
 [Claude CLI](https://code.claude.com/docs/en/cli-reference),
 [Claude headless accounting](https://code.claude.com/docs/en/headless),
+[Claude accounting scopes](https://code.claude.com/docs/en/agent-sdk/cost-tracking),
 [Gemini headless mode](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/headless.md),
 [OpenCode CLI](https://opencode.ai/docs/cli/),
 [OpenCode plugins](https://opencode.ai/docs/plugins/),

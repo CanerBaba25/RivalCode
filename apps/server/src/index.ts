@@ -4,7 +4,7 @@ import { serve } from '@hono/node-server'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { resolve, relative, isAbsolute, join } from 'node:path'
-import { Store, createRedactor, loadConfig } from '@rivalcode/runtime'
+import { Store, createRedactor, defaultConfig, loadConfig } from '@rivalcode/runtime'
 import { detectAdapters } from '@rivalcode/adapters'
 import {
   exportRecord,
@@ -14,6 +14,7 @@ import {
   redactSession
 } from '@rivalcode/core'
 import type {
+  AgentDetection,
   Battle,
   NormalizedEvent,
   RivalConfig,
@@ -30,6 +31,12 @@ const safeSession = (session: Session, privacy: CapturePrivacy) =>
   redactSession(session, privacy.redact, privacy.config)
 const safeBattle = (battle: Battle, privacy: CapturePrivacy) =>
   redactBattle(battle, privacy.redact, privacy.config)
+const safeDetection = (agent: AgentDetection, redact: Redactor): AgentDetection => ({
+  ...agent,
+  displayName: String(redact(agent.displayName)),
+  version: agent.version === null ? null : String(redact(agent.version)),
+  detail: agent.detail === undefined ? undefined : String(redact(agent.detail))
+})
 
 const agents = new Set(['codex', 'claude', 'gemini', 'opencode', 'demo'])
 const statuses = new Set(['preparing', 'running', 'verifying', 'completed', 'failed', 'aborted'])
@@ -233,9 +240,19 @@ export function createApp(root: string, webDir?: string): Hono<PrivacyEnv> {
     if (context.req.path.startsWith('/api/')) context.header('Cache-Control', 'no-store')
     await next()
   })
-  app.onError((error, context) => {
-    if (error instanceof InputError) return context.json({ error: error.message }, 400)
-    console.error('[RivalCode API]', error.message)
+  app.onError(async (error, context) => {
+    // Config validation can fail before request privacy exists. Use the mandatory
+    // credential rules for diagnostics, and withhold details if those cannot load.
+    const redact =
+      context.get('privacy')?.redact ??
+      (await createRedactor(root, defaultConfig).catch(() => null))
+    const message = redact
+      ? String(redact(error.message))
+      : 'Local request failed; diagnostic redaction is unavailable.'
+
+    if (error instanceof InputError) return context.json({ error: message }, 400)
+
+    console.error('[RivalCode API]', message)
     return context.json(
       { error: 'Unable to read local records. See the local server log for details.' },
       500
@@ -253,11 +270,18 @@ export function createApp(root: string, webDir?: string): Hono<PrivacyEnv> {
   let detection: ReturnType<typeof detectAdapters> | undefined
   let detectedAt = 0
   app.get('/api/agents', async (context) => {
+    const { redact } = context.get('privacy')
+
     if (!detection || Date.now() - detectedAt > 30_000) {
-      detection = detectAdapters()
+      // Retain capture-time protections through credential rotation, then apply
+      // current protections to the cached text on each response.
+      detection = detectAdapters().then((agents) =>
+        agents.map((agent) => safeDetection(agent, redact))
+      )
       detectedAt = Date.now()
     }
-    return context.json(await detection)
+
+    return context.json((await detection).map((agent) => safeDetection(agent, redact)))
   })
   app.get('/api/repositories', (context) =>
     context.json(
