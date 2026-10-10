@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type {
   NormalizedEvent,
   EventInput,
@@ -13,8 +13,37 @@ const forbiddenKeys =
 const outputKeys =
   /^(output|stdout|stderr|aggregated_output|toolOutput|tool_response|response|result|content|input|parameters|arguments)$/i
 const estimateSource = 'Estimated API-equivalent cost from configured pricing'
+const mixedModelCostSource = 'Cost unavailable: mixed-model usage lacks complete native accounting'
 const validTokens = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+const generatedId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i
+const semanticEnums: Record<string, readonly string[]> = {
+  semantics: ['incremental', 'cumulative'],
+  costType: ['provider_reported', 'estimated', 'unknown'],
+  modelSource: ['configured', 'native'],
+  scope: ['turn', 'step', 'session'],
+  severity: ['info', 'warning', 'error'],
+  phase: ['setup', 'baseline', 'final'],
+  status: [
+    'preparing',
+    'running',
+    'verifying',
+    'completed',
+    'failed',
+    'aborted',
+    'A',
+    'D',
+    'M',
+    'R',
+    'C',
+    'add',
+    'delete',
+    'update',
+    'modify',
+    'rename'
+  ],
+  kind: ['add', 'delete', 'update', 'modify', 'rename']
+}
 
 const payloadFields: Record<EventType, string[]> = {
   session_started: ['demo', 'baseCommit', 'providerSessionId', 'sessionId', 'model'],
@@ -81,6 +110,7 @@ const payloadFields: Record<EventType, string[]> = {
     'cachedInputTokens',
     'totalTokens',
     'model',
+    'modelSource',
     'semantics',
     'scope',
     'source',
@@ -88,7 +118,7 @@ const payloadFields: Record<EventType, string[]> = {
     'costUsd',
     'costType'
   ],
-  cost: ['costUsd', 'costType', 'semantics', 'source', 'provenance', 'model'],
+  cost: ['costUsd', 'costType', 'semantics', 'source', 'provenance', 'model', 'modelSource'],
   error: [
     'message',
     'error',
@@ -154,6 +184,9 @@ export function makeEvent(
   config: RivalConfig,
   redact: (value: unknown) => unknown
 ): NormalizedEvent | null {
+  if (!input || !input.payload || typeof input.payload !== 'object' || Array.isArray(input.payload))
+    return null
+  if (!Object.hasOwn(payloadFields, input.type)) return null
   const allowed = payloadFields[input.type]
   if (!allowed || !['native', 'hook', 'otel', 'process', 'git', 'rivalcode'].includes(input.source))
     return null
@@ -163,6 +196,10 @@ export function makeEvent(
   const selected = Object.fromEntries(
     Object.entries(input.payload).filter(([key]) => allowed.includes(key))
   )
+  if (input.payload.truncated === true) {
+    selected.truncated = true
+    selected.message = 'Event exceeded configured size limit.'
+  }
   if (input.type === 'finding' && selected.evidence && typeof selected.evidence === 'object')
     selected.evidence = Object.fromEntries(
       Object.entries(selected.evidence).filter(([key]) =>
@@ -171,8 +208,30 @@ export function makeEvent(
     )
 
   const payload = redact(applyPrivacy(selected, config)) as Record<string, unknown>
+  for (const [key, values] of Object.entries(semanticEnums))
+    if (typeof selected[key] === 'string' && values.includes(selected[key] as string))
+      payload[key] = selected[key]
+
+  if (input.source === 'rivalcode') {
+    if (typeof selected.verificationId === 'string' && generatedId.test(selected.verificationId))
+      payload.verificationId = selected.verificationId
+    if (input.type === 'finding') {
+      if (typeof selected.id === 'string' && generatedId.test(selected.id)) payload.id = selected.id
+      const original = selected.evidence as Record<string, unknown> | undefined
+      const evidence = payload.evidence as Record<string, unknown> | undefined
+      if (original && evidence) {
+        for (const key of ['eventIds', 'checkIds'])
+          if (Array.isArray(original[key]))
+            evidence[key] = (original[key] as unknown[]).filter(
+              (id) => typeof id === 'string' && generatedId.test(id)
+            )
+      }
+    }
+  }
+
   const time = input.timestamp ? new Date(input.timestamp) : new Date()
   const timestamp = Number.isFinite(time.getTime()) ? time.toISOString() : new Date().toISOString()
+  const nativeId = input.nativeId ? String(redact(input.nativeId)) : undefined
   const base = {
     id: randomUUID(),
     sessionId,
@@ -180,13 +239,43 @@ export function makeEvent(
     timestamp,
     type: input.type,
     source: input.source,
-    ...(input.nativeId ? { nativeId: String(redact(input.nativeId)) } : {})
+    ...(nativeId
+      ? {
+          nativeId:
+            Buffer.byteLength(nativeId) > 512
+              ? 'sha256:' + createHash('sha256').update(nativeId).digest('hex')
+              : nativeId
+        }
+      : {})
   }
 
-  if (Buffer.byteLength(JSON.stringify(payload)) > config.limits.maxEventBytes)
+  if (Buffer.byteLength(JSON.stringify({ ...base, payload })) > config.limits.maxEventBytes)
     return {
       ...base,
-      payload: { truncated: true, message: 'Event exceeded configured size limit.' }
+      payload: {
+        truncated: true,
+        message: 'Event exceeded configured size limit.',
+        ...Object.fromEntries(
+          Object.entries(payload).filter(([key, value]) =>
+            ['fatal', 'failed', 'timedOut', 'aborted', 'success'].includes(key)
+              ? typeof value === 'boolean'
+              : ['severity', 'status', 'semantics', 'costType', 'modelSource', 'scope'].includes(
+                    key
+                  )
+                ? typeof value === 'string' && semanticEnums[key]?.includes(value)
+                : [
+                    'exitCode',
+                    'inputTokens',
+                    'outputTokens',
+                    'cachedInputTokens',
+                    'totalTokens',
+                    'costUsd'
+                  ].includes(key) &&
+                  typeof value === 'number' &&
+                  Number.isFinite(value)
+          )
+        )
+      }
     }
 
   return { ...base, payload }
@@ -199,66 +288,111 @@ export function mergeUsage(
 ): UsageRecord {
   const next = { ...previous }
   const cumulative = payload.semantics === 'cumulative'
+  const localEstimateBefore = previous.source?.startsWith(estimateSource) === true
+  const modelChanged =
+    typeof payload.model === 'string' &&
+    previous.model !== undefined &&
+    payload.model !== previous.model &&
+    ((previous.inputTokens ?? 0) > 0 || (previous.outputTokens ?? 0) > 0)
+  const mixedModelCost =
+    previous.source === mixedModelCostSource ||
+    (modelChanged && (localEstimateBefore || previous.costUsd === undefined))
+  let tokenCountsChanged = false
+  let addedInput = 0
+  let addedOutput = 0
 
   for (const key of ['inputTokens', 'outputTokens', 'cachedInputTokens', 'totalTokens'] as const) {
     const value = payload[key]
-    if (validTokens(value)) next[key] = cumulative ? value : (previous[key] ?? 0) + value
+    if (!validTokens(value)) continue
+    if (
+      key === 'cachedInputTokens' &&
+      validTokens(payload.inputTokens) &&
+      value > payload.inputTokens
+    )
+      continue
+
+    const total = cumulative ? value : (previous[key] ?? 0) + value
+    if (!validTokens(total)) continue
+    next[key] = total
+
+    if (key === 'inputTokens' || key === 'outputTokens') {
+      tokenCountsChanged = true
+      if (key === 'inputTokens') addedInput = value
+      else addedOutput = value
+    }
   }
-  if (typeof payload.model === 'string') next.model = payload.model
+  if (next.inputTokens !== undefined && (next.cachedInputTokens ?? 0) > next.inputTokens)
+    delete next.cachedInputTokens
+
+  if (typeof payload.model === 'string') {
+    next.model = payload.model
+    next.modelSource = payload.modelSource === 'configured' ? 'configured' : 'native'
+  }
+
+  // Aggregate token totals cannot be repriced with the last model after a model switch.
+  if (mixedModelCost) {
+    delete next.costUsd
+    next.costType = 'unknown'
+    next.source = mixedModelCostSource
+  }
 
   const incomingCost =
     typeof payload.costUsd === 'number' && Number.isFinite(payload.costUsd) && payload.costUsd >= 0
-  if (incomingCost) {
+  if (incomingCost && (!mixedModelCost || cumulative)) {
     // Native accounting replaces a local price estimate rather than adding to it.
-    const baseCost = previous.source === estimateSource ? 0 : (previous.costUsd ?? 0)
-    next.costUsd = cumulative ? (payload.costUsd as number) : baseCost + (payload.costUsd as number)
-    next.costType =
-      payload.costType === 'provider_reported'
-        ? 'provider_reported'
-        : payload.costType === 'estimated'
-          ? 'estimated'
-          : 'unknown'
-    next.source = String(
-      payload.provenance ??
-        payload.source ??
-        'Native agent telemetry; billing provenance unspecified'
-    )
+    const baseCost = localEstimateBefore ? 0 : (previous.costUsd ?? 0)
+    const cost = cumulative ? (payload.costUsd as number) : baseCost + (payload.costUsd as number)
+    if (Number.isFinite(cost)) {
+      next.costUsd = cost
+      next.costType =
+        payload.costType === 'provider_reported'
+          ? 'provider_reported'
+          : payload.costType === 'estimated'
+            ? 'estimated'
+            : 'unknown'
+      next.source = String(
+        payload.provenance ??
+          payload.source ??
+          'Native agent telemetry; billing provenance unspecified'
+      )
+    }
   }
 
-  const tokenCountsChanged = ['inputTokens', 'outputTokens'].some((key) =>
-    validTokens(payload[key])
-  )
   if (
     tokenCountsChanged &&
     next.inputTokens !== undefined &&
     next.outputTokens !== undefined &&
-    payload.totalTokens === undefined
+    !validTokens(payload.totalTokens)
   ) {
-    next.totalTokens =
+    const total =
       !cumulative && previous.totalTokens !== undefined
-        ? previous.totalTokens +
-          (validTokens(payload.inputTokens) ? payload.inputTokens : 0) +
-          (validTokens(payload.outputTokens) ? payload.outputTokens : 0)
+        ? previous.totalTokens + addedInput + addedOutput
         : next.inputTokens + next.outputTokens
+    if (validTokens(total)) next.totalTokens = total
+    else delete next.totalTokens
   }
 
   const price = next.model ? config.pricing[next.model] : undefined
-  const localEstimate = next.costUsd === undefined || previous.source === estimateSource
+  const localEstimate = next.costUsd === undefined || localEstimateBefore
   if (
     !incomingCost &&
+    !mixedModelCost &&
     localEstimate &&
     price &&
     next.inputTokens !== undefined &&
     next.outputTokens !== undefined
   ) {
     const cached = Math.min(next.cachedInputTokens ?? 0, next.inputTokens)
-    next.costUsd =
-      ((next.inputTokens - cached) * price.inputPerMillion +
-        cached * (price.cachedInputPerMillion ?? price.inputPerMillion) +
-        next.outputTokens * price.outputPerMillion) /
-      1000000
-    next.costType = 'estimated'
-    next.source = estimateSource
+    const cost =
+      ((next.inputTokens - cached) / 1000000) * price.inputPerMillion +
+      (cached / 1000000) * (price.cachedInputPerMillion ?? price.inputPerMillion) +
+      (next.outputTokens / 1000000) * price.outputPerMillion
+    if (Number.isFinite(cost)) {
+      next.costUsd = cost
+      next.costType = 'estimated'
+      next.source =
+        estimateSource + (next.modelSource === 'configured' ? ' (configured model)' : '')
+    }
   }
 
   return next

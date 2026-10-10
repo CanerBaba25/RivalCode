@@ -63,4 +63,10 @@ Do not put credentials in RivalCode config or custom argument strings.
 Optional `pricing` maps exact model IDs to `inputPerMillion`, `outputPerMillion`
 and `cachedInputPerMillion`. Its result is explicitly labeled **Estimated
 API-equivalent cost**, not your subscription bill. Unknown metrics stay `N/A`.
+Configured models are labeled separately from identities reported by the agent;
+configured pricing can estimate usage even when the native stream omits its model.
 See [adapter accounting](adapters.md) for each native stream's limits.
+
+Dashboard responses and exports apply your current prompt/output privacy choices
+to older records too. Turning storage off does not delete earlier SQLite records;
+it omits the corresponding content from these views and future captures.

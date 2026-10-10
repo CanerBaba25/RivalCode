@@ -12,6 +12,8 @@ import {
   duration,
   number,
   cost,
+  costProvenance,
+  modelLabel,
   date,
   shortId
 } from '../lib/common.js'
@@ -63,7 +65,7 @@ export function SessionDetail({ id }: { id: string }) {
             <div className="session-identity">
               <Agent id={session.agentId} />
               <span className="subtext">
-                {session.model ?? 'Model unavailable'} ·{' '}
+                {modelLabel(session.model, session.modelSource)} ·{' '}
                 {session.agentVersion ?? 'Version unavailable'}
               </span>
             </div>
@@ -117,11 +119,7 @@ export function SessionDetail({ id }: { id: string }) {
               value={number(session.usage.totalTokens)}
               detail={
                 cost(session.usage.costUsd, session.usage.costType) +
-                (session.usage.costType === 'estimated'
-                  ? ' · API-equivalent estimate*'
-                  : session.usage.costType === 'provider_reported'
-                    ? ' · provider reported'
-                    : ' · cost unavailable')
+                ` · ${costProvenance(session.usage.costType, session.usage.costUsd)}`
               }
               icon="code"
             />
@@ -269,7 +267,11 @@ export function SessionDetail({ id }: { id: string }) {
                   </div>
                   <div>
                     <dt>Cost provenance</dt>
-                    <dd>{session.usage.costType?.replaceAll('_', ' ') ?? 'unavailable'}</dd>
+                    <dd>{costProvenance(session.usage.costType, session.usage.costUsd)}</dd>
+                  </div>
+                  <div>
+                    <dt>Pricing model</dt>
+                    <dd>{modelLabel(session.usage.model, session.usage.modelSource)}</dd>
                   </div>
                   <div>
                     <dt>Usage source</dt>

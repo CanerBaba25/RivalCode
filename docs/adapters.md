@@ -10,7 +10,7 @@ its existing authentication. A readiness probe does not prove model entitlement.
 | Codex       | `codex exec --json`, prompt on stdin; workspace-write, no unresolved approvals | Native turn token counts; dollar cost/model may be unavailable              |
 | Claude Code | Noninteractive `-p`, verbose `stream-json`                                     | Terminal cumulative usage; native client cost is explicitly estimated       |
 | Gemini CLI  | Noninteractive prompt, `stream-json`                                           | Final token statistics; monetary cost unavailable unless configured pricing |
-| OpenCode    | `run --format json` plus a temporary project observer plugin                   | Native step usage/reported model accounting; invoice not implied            |
+| OpenCode    | `run --format json` plus a temporary project observer plugin                   | Step tokens and native API-equivalent cost estimate; invoice not implied    |
 | Demo Agent  | Explicit `--demo`, deterministic local edit and real Node tests                | No simulated model, tokens or costs                                         |
 
 Native tool/command completion is parsed where exposed. The OpenCode observer
@@ -23,6 +23,11 @@ Reasoning/thinking content is discarded, not recorded or displayed. Unknown even
 types are ignored safely. Public tool output is disabled by default; tool names,
 commands, status and file paths remain observable. The dashboard distinguishes
 native capture from final Git observations and never invents intermediate diffs.
+
+OpenCode's native cost is a client estimate calculated from token prices, rather
+than a provider invoice. Configured pricing cannot reconstruct a mixed-model
+total without accounting for each model; such totals remain unknown. Reasoning
+token counts can contribute to usage, but reasoning content is never captured.
 
 Codex/Claude native login status can confirm credentials are configured. Gemini
 has no documented standalone auth-status command, so configuration presence is
@@ -39,4 +44,5 @@ Sources: [Codex noninteractive mode](https://learn.chatgpt.com/docs/non-interact
 [Claude headless accounting](https://code.claude.com/docs/en/headless),
 [Gemini headless mode](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/headless.md),
 [OpenCode CLI](https://opencode.ai/docs/cli/),
-[OpenCode plugins](https://opencode.ai/docs/plugins/).
+[OpenCode plugins](https://opencode.ai/docs/plugins/),
+[OpenCode usage accounting](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/session/usage.ts).

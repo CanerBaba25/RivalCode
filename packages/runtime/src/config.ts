@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, realpath, writeFile, appendFile } from 'node:fs/promises'
+import { access, lstat, mkdir, readFile, realpath, writeFile, appendFile } from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod'
 import type { CommandSpec, RivalConfig } from '@rivalcode/shared'
@@ -335,11 +335,12 @@ export async function detectProject(root: string): Promise<ProjectDetection> {
     (await has('settings.gradle')) ||
     (await has('settings.gradle.kts'))
   ) {
-    const executable = (await has('gradlew'))
-      ? process.platform === 'win32' && (await has('gradlew.bat'))
+    const executable =
+      process.platform === 'win32' && (await has('gradlew.bat'))
         ? 'gradlew.bat'
-        : './gradlew'
-      : 'gradle'
+        : (await has('gradlew'))
+          ? './gradlew'
+          : 'gradle'
 
     return {
       type: 'java-gradle',
@@ -348,11 +349,12 @@ export async function detectProject(root: string): Promise<ProjectDetection> {
   }
 
   if (await has('pom.xml')) {
-    const executable = (await has('mvnw'))
-      ? process.platform === 'win32' && (await has('mvnw.cmd'))
+    const executable =
+      process.platform === 'win32' && (await has('mvnw.cmd'))
         ? 'mvnw.cmd'
-        : './mvnw'
-      : 'mvn'
+        : (await has('mvnw'))
+          ? './mvnw'
+          : 'mvn'
 
     return {
       type: 'java-maven',
@@ -425,6 +427,15 @@ async function ensureStateIgnored(root: string): Promise<void> {
     throw new Error('RivalCode state directory escapes the repository')
 
   const file = path.join(root, '.gitignore')
+  const metadata = await lstat(file).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined
+    throw error
+  })
+
+  if (metadata?.isSymbolicLink()) throw new Error('Refusing to edit a symlinked .gitignore')
+  if (metadata && metadata.nlink > 1) throw new Error('Refusing to edit a hard-linked .gitignore')
+  if (metadata && !metadata.isFile()) throw new Error('.gitignore must be a regular file')
+
   const content = await readFile(file, 'utf8').catch((error) => {
     if (error.code === 'ENOENT') return ''
     throw error

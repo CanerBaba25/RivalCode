@@ -1,6 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, openSync, readSync, closeSync, statSync } from 'node:fs'
-import { mkdir, realpath, writeFile, lstat } from 'node:fs/promises'
+import {
+  appendFileSync,
+  existsSync,
+  openSync,
+  readSync,
+  closeSync,
+  lstatSync,
+  realpathSync
+} from 'node:fs'
+import { mkdir, realpath, lstat } from 'node:fs/promises'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { getAdapter, JsonlParser } from '@rivalcode/adapters'
@@ -33,6 +41,8 @@ import type {
 import { makeEvent, mergeUsage } from './events.js'
 import { detectFindings } from './findings.js'
 import { rankBattle, scoreRun } from './scoring.js'
+import { redactSession, redactRepository, redactBattle } from './privacy.js'
+import { writeArtifact } from './artifacts.js'
 
 function within(root: string, candidate: string) {
   const relative = path.relative(root, candidate)
@@ -70,14 +80,17 @@ export async function repositoryRecord(
   root: string,
   redact: (value: unknown) => unknown
 ): Promise<RepositoryRecord> {
-  return redact({
-    id: createHash('sha256').update(root).digest('hex').slice(0, 24),
-    path: root,
-    name: path.basename(root),
-    remoteUrl: String(redact((await getRemote(root)) ?? '')) || undefined,
-    projectType: (await detectProject(root)).type,
-    createdAt: new Date().toISOString()
-  }) as RepositoryRecord
+  return redactRepository(
+    {
+      id: createHash('sha256').update(root).digest('hex').slice(0, 24),
+      path: root,
+      name: path.basename(root),
+      remoteUrl: String(redact((await getRemote(root)) ?? '')) || undefined,
+      projectType: (await detectProject(root)).type,
+      createdAt: new Date().toISOString()
+    },
+    redact
+  )
 }
 
 export async function runAgent(options: RunOptions): Promise<Session> {
@@ -86,6 +99,21 @@ export async function runAgent(options: RunOptions): Promise<Session> {
   const redact = await createRedactor(root, config)
   const store = options.store instanceof Store ? options.store : new Store(root)
   const ownStore = !(options.store instanceof Store)
+
+  try {
+    return await executeRun(options, root, config, redact, store)
+  } finally {
+    if (ownStore) store.close()
+  }
+}
+
+async function executeRun(
+  options: RunOptions,
+  root: string,
+  config: RivalConfig,
+  redact: (value: unknown) => unknown,
+  store: Store
+): Promise<Session> {
   const repository = await repositoryRecord(root, redact)
 
   store.upsertRepository(repository)
@@ -122,12 +150,13 @@ export async function runAgent(options: RunOptions): Promise<Session> {
     tags: redact(options.tags ?? []) as string[]
   }
 
-  store.saveSession(redact(session) as Session)
+  store.saveSession(redactSession(session, redact))
 
   const events: NormalizedEvent[] = []
   let artifactBytes = 0
   let evidenceLimited = false
   let nativeFailure: string | undefined
+  let eventDescriptor: number | undefined
 
   const emit = (input: EventInput) => {
     const event = makeEvent(input, id, options.agent, config, redact)
@@ -145,12 +174,15 @@ export async function runAgent(options: RunOptions): Promise<Session> {
     if (event.type === 'usage' || event.type === 'cost') {
       session.usage = mergeUsage(session.usage, event.payload, config)
       if (session.usage.model) session.model = session.usage.model
-      store.saveSession(redact(session) as Session)
+      session.modelSource = session.usage.modelSource
+      store.saveSession(redactSession(session, redact))
     }
 
     if (event.type === 'session_started' && typeof event.payload.model === 'string') {
       session.model = event.payload.model
-      store.saveSession(redact(session) as Session)
+      session.modelSource = 'native'
+      session.usage = { ...session.usage, model: session.model, modelSource: 'native' }
+      store.saveSession(redactSession(session, redact))
     }
 
     // Keep only bounded analysis evidence in memory; the full timeline remains paginated in SQLite.
@@ -174,8 +206,8 @@ export async function runAgent(options: RunOptions): Promise<Session> {
     const line = JSON.stringify(event) + '\n'
     const bytes = Buffer.byteLength(line)
 
-    if (artifactBytes + bytes <= config.limits.maxArtifactBytes) {
-      appendFileSync(path.join(artifactDir, 'events.jsonl'), line, { mode: 0o600 })
+    if (eventDescriptor !== undefined && artifactBytes + bytes <= config.limits.maxArtifactBytes) {
+      appendFileSync(eventDescriptor, line)
       artifactBytes += bytes
     }
 
@@ -190,6 +222,10 @@ export async function runAgent(options: RunOptions): Promise<Session> {
   let captureTimer: ReturnType<typeof setInterval> | undefined
   let captureOffset = 0
   const captureDecoder = new StringDecoder('utf8')
+  const captureController = new AbortController()
+  const agentSignal = options.signal
+    ? AbortSignal.any([options.signal, captureController.signal])
+    : captureController.signal
 
   const parse = (records: unknown[]) => {
     for (const record of records) for (const input of adapter.parseEvent(record)) emit(input)
@@ -200,7 +236,12 @@ export async function runAgent(options: RunOptions): Promise<Session> {
 
     if (!file || !existsSync(file)) return
 
-    const size = statSync(file).size
+    const info = lstatSync(file)
+
+    if (info.isSymbolicLink() || !info.isFile() || !within(artifactDir, realpathSync(file)))
+      throw new Error('Integration capture must be a regular file inside the session artifacts')
+
+    const size = info.size
 
     if (size > config.limits.maxArtifactBytes)
       throw new Error('Integration capture exceeded the configured artifact limit')
@@ -223,6 +264,8 @@ export async function runAgent(options: RunOptions): Promise<Session> {
   let diagnostic = ''
 
   try {
+    eventDescriptor = openSync(path.join(artifactDir, 'events.jsonl'), 'wx', 0o600)
+
     progress(`Session ${id}: capturing baseline`)
     emit({
       type: 'session_started',
@@ -254,7 +297,7 @@ export async function runAgent(options: RunOptions): Promise<Session> {
     )
 
     session.verification.push(...setup)
-    store.saveSession(redact(session) as Session)
+    store.saveSession(redactSession(session, redact))
 
     if (setup.some((check) => !check.passed))
       throw new Error('Repository setup failed; inspect the persisted setup verification')
@@ -280,17 +323,25 @@ export async function runAgent(options: RunOptions): Promise<Session> {
 
     session.status = 'running'
     session.model = config.agents[options.agent]?.model
-    store.saveSession(redact(session) as Session)
+    if (session.model && !session.usage.model) {
+      session.modelSource = 'configured'
+      session.usage = { ...session.usage, model: session.model, modelSource: 'configured' }
+    }
+    store.saveSession(redactSession(session, redact))
 
     prepared = await adapter.prepareRun({
       sessionId: id,
       cwd,
+      repositoryRoot: root,
       task: options.task,
       config,
       model: session.model,
       artifactDir,
       demo: session.demo
     })
+
+    const captureToken = prepared.env?.RIVALCODE_CAPTURE_TOKEN
+    redact = await createRedactor(root, config, captureToken ? [captureToken] : [])
 
     let captureError: Error | undefined
 
@@ -300,6 +351,9 @@ export async function runAgent(options: RunOptions): Promise<Session> {
           capture()
         } catch (error) {
           captureError = error instanceof Error ? error : new Error(String(error))
+          captureController.abort(captureError)
+          clearInterval(captureTimer)
+          captureTimer = undefined
         }
       }, 100)
 
@@ -309,7 +363,7 @@ export async function runAgent(options: RunOptions): Promise<Session> {
       cwd,
       env: prepared.env,
       stdin: prepared.stdin,
-      signal: options.signal,
+      signal: agentSignal,
       timeoutMs: config.battle.timeoutMinutes * 60000,
       // Agent output is streamed through allowlisted native parsers and never retained raw.
       maxOutputBytes: 0,
@@ -351,7 +405,7 @@ export async function runAgent(options: RunOptions): Promise<Session> {
     }
 
     session.status = 'verifying'
-    store.saveSession(redact(session) as Session)
+    store.saveSession(redactSession(session, redact))
 
     progress('Running independent final verification')
     session.verification.push(
@@ -379,7 +433,7 @@ export async function runAgent(options: RunOptions): Promise<Session> {
           '\n[RivalCode diff truncated]\n'
         : diff
 
-    await writeFile(path.join(artifactDir, 'final.diff'), bounded, { mode: 0o600, flag: 'wx' })
+    await writeArtifact(artifactDir, 'final.diff', bounded)
 
     for (const file of session.files)
       emit({
@@ -458,10 +512,10 @@ export async function runAgent(options: RunOptions): Promise<Session> {
       session.files = partial.files
       const safe = String(redact(partial.diff))
 
-      await writeFile(
-        path.join(artifactDir, 'final.diff'),
-        Buffer.from(safe).subarray(0, config.limits.maxArtifactBytes),
-        { mode: 0o600 }
+      await writeArtifact(
+        artifactDir,
+        'final.diff',
+        Buffer.from(safe).subarray(0, config.limits.maxArtifactBytes)
       )
     } catch (captureFailure) {
       emit({
@@ -505,34 +559,42 @@ export async function runAgent(options: RunOptions): Promise<Session> {
 
     session.finishedAt = new Date().toISOString()
     session.durationMs = Date.now() - started
-    store.saveSession(redact(session) as Session)
 
-    await writeFile(
-      path.join(artifactDir, 'metadata.json'),
-      JSON.stringify(redact(session), null, 2),
-      {
-        mode: 0o600
+    if (eventDescriptor !== undefined) {
+      closeSync(eventDescriptor)
+      eventDescriptor = undefined
+    }
+
+    try {
+      const safe = redactSession(session, redact)
+      await writeArtifact(
+        artifactDir,
+        'verification.json',
+        JSON.stringify(safe.verification, null, 2)
+      )
+      await writeArtifact(artifactDir, 'findings.json', JSON.stringify(safe.findings, null, 2))
+      await writeArtifact(artifactDir, 'metadata.json', JSON.stringify(safe, null, 2))
+    } catch (error) {
+      const message = 'Artifact persistence failed: ' + String(redact(String(error)))
+      session.error = [session.error, message].filter(Boolean).join('; ')
+      session.status = options.signal?.aborted ? 'aborted' : 'failed'
+
+      if (session.score) {
+        session.score.requiredPassed = false
+        session.score.reliability = 0
+        session.score.total = Math.min(49, session.score.total)
+        session.score.explanation.push('Evidence artifacts could not be saved; score capped at 49.')
       }
-    )
 
-    await writeFile(
-      path.join(artifactDir, 'verification.json'),
-      JSON.stringify(redact(session.verification), null, 2),
-      { mode: 0o600 }
-    )
+      emit({ type: 'error', source: 'rivalcode', payload: { message } })
+    }
 
-    await writeFile(
-      path.join(artifactDir, 'findings.json'),
-      JSON.stringify(redact(session.findings), null, 2),
-      { mode: 0o600 }
-    )
-
-    if (ownStore) store.close()
+    store.saveSession(redactSession(session, redact))
   }
 
   progress(`Session ${id}: ${session.status}`)
 
-  return redact(session) as Session
+  return redactSession(session, redact)
 }
 
 export interface BattleOptions {
@@ -579,7 +641,7 @@ export async function runBattle(options: BattleOptions): Promise<Battle> {
     config: redact(config) as RivalConfig
   }
 
-  store.saveBattle(redact(battle) as Battle)
+  store.saveBattle(redactBattle(battle, redact))
 
   const sessions: Session[] = []
 
@@ -641,7 +703,7 @@ export async function runBattle(options: BattleOptions): Promise<Battle> {
           tags: []
         }
 
-        store.saveSession(redact(session) as Session)
+        store.saveSession(redactSession(session, redact))
 
         const event = makeEvent(
           { type: 'error', source: 'rivalcode', payload: { message } },
@@ -653,12 +715,10 @@ export async function runBattle(options: BattleOptions): Promise<Battle> {
 
         if (event) store.appendEvents([event])
 
-        await writeFile(
-          path.join(artifactDir, 'metadata.json'),
-          JSON.stringify(redact(session), null, 2),
-          {
-            mode: 0o600
-          }
+        await writeArtifact(
+          artifactDir,
+          'metadata.json',
+          JSON.stringify(redactSession(session, redact), null, 2)
         )
 
         options.onProgress?.(`${agent} preparation failed: ${message}`)
@@ -666,7 +726,7 @@ export async function runBattle(options: BattleOptions): Promise<Battle> {
 
       sessions.push(session)
       battle.sessionIds.push(session.id)
-      store.saveBattle(redact(battle) as Battle)
+      store.saveBattle(redactBattle(battle, redact))
 
       if (session.status === 'completed') {
         try {
@@ -678,7 +738,7 @@ export async function runBattle(options: BattleOptions): Promise<Battle> {
     }
 
     battle.status = 'running'
-    store.saveBattle(redact(battle) as Battle)
+    store.saveBattle(redactBattle(battle, redact))
 
     if (config.battle.parallel) {
       options.onProgress?.(
@@ -704,11 +764,11 @@ export async function runBattle(options: BattleOptions): Promise<Battle> {
     throw error
   } finally {
     battle.finishedAt = new Date().toISOString()
-    store.saveBattle(redact(battle) as Battle)
+    store.saveBattle(redactBattle(battle, redact))
     store.close()
   }
 
-  return redact(battle) as Battle
+  return redactBattle(battle, redact)
 }
 
 export async function cleanupRuns(rootInput: string) {
@@ -752,7 +812,7 @@ export async function cleanupRuns(rootInput: string) {
       if (offset + page.items.length >= page.total) break
     }
 
-    return redact({ recovered, removed }) as { recovered: string[]; removed: string[] }
+    return { recovered, removed: redact(removed) as string[] }
   } finally {
     store.close()
   }

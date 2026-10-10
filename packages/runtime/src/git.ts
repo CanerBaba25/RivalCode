@@ -1,4 +1,4 @@
-import { mkdir, realpath, mkdtemp, rm } from 'node:fs/promises'
+import { lstat, mkdir, realpath, mkdtemp, rm } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import type { FileChange, GitSnapshot } from '@rivalcode/shared'
@@ -105,6 +105,7 @@ function parseNumstat(
 }
 
 async function stageSnapshot(
+  cwd: string,
   execute: (args: string[], stdin?: string) => Promise<string>,
   ignore: string[]
 ): Promise<void> {
@@ -122,11 +123,43 @@ async function stageSnapshot(
 
   if (!paths) return
 
+  const skipped = new Set(
+    (await git(cwd, ['ls-files', '-v', '-z']))
+      .split('\0')
+      .filter((entry) => entry[0]?.toUpperCase() === 'S')
+      .map((entry) => entry.slice(2))
+  )
+  const eligible: string[] = []
+
+  for (const name of paths.split('\0').filter(Boolean)) {
+    if (skipped.has(name)) {
+      const metadata = await lstat(path.join(cwd, name)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return undefined
+        throw error
+      })
+
+      // Missing skip-worktree entries belong to the sparse checkout, not agent deletions.
+      if (!metadata) continue
+    }
+
+    eligible.push(name)
+  }
+
+  if (!eligible.length) return
+
   // Passing exclusions directly to `add` makes Git reject existing ignored directories.
   // Enumerate eligible paths first, then stage literal NUL-separated names including deletions.
   await execute(
-    ['--literal-pathspecs', 'add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'],
-    paths
+    [
+      '-c',
+      'core.sparseCheckout=false',
+      '--literal-pathspecs',
+      'add',
+      '-A',
+      '--pathspec-from-file=-',
+      '--pathspec-file-nul'
+    ],
+    eligible.join('\0') + '\0'
   )
 }
 
@@ -163,7 +196,7 @@ export async function captureDiff(
 
   try {
     await execute(['read-tree', base])
-    await stageSnapshot(execute, ignore)
+    await stageSnapshot(cwd, execute, ignore)
 
     const names = parseNameStatus(
       await execute([
@@ -258,7 +291,7 @@ export async function snapshotCommit(cwd: string, ignore: string[] = []): Promis
     const head = await getHead(cwd)
     await execute(['read-tree', head])
 
-    await stageSnapshot(execute, ignore)
+    await stageSnapshot(cwd, execute, ignore)
 
     const tree = (await execute(['write-tree'])).trim()
 
@@ -285,6 +318,7 @@ async function validateWorktreePath(root: string, target: string): Promise<strin
     throw new Error('Worktree path must be a child of .rivalcode/worktrees')
 
   // Resolve existing ancestors to stop a symlinked state directory escaping the repository.
+  await validateExistingAncestor(resolvedRoot, allowed)
   await mkdir(allowed, { recursive: true })
   const actualAllowed = await realpath(allowed)
   const allowedRelative = path.relative(resolvedRoot, actualAllowed)
@@ -297,6 +331,7 @@ async function validateWorktreePath(root: string, target: string): Promise<strin
     throw new Error('Worktree directory escapes the repository')
 
   const parent = path.dirname(resolved)
+  await validateExistingAncestor(actualAllowed, parent)
   await mkdir(parent, { recursive: true })
   const actualParent = await realpath(parent)
   const parentRelative = path.relative(actualAllowed, actualParent)
@@ -309,6 +344,32 @@ async function validateWorktreePath(root: string, target: string): Promise<strin
     throw new Error('Worktree parent escapes its state directory')
 
   return resolved
+}
+
+async function validateExistingAncestor(boundary: string, target: string): Promise<void> {
+  let existing = target
+
+  while (true) {
+    let actual: string
+
+    try {
+      actual = await realpath(existing)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+
+      const parent = path.dirname(existing)
+      if (parent === existing) throw error
+      existing = parent
+      continue
+    }
+
+    const relative = path.relative(boundary, actual)
+
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))
+      throw new Error('Worktree directory escapes its owned boundary')
+
+    return
+  }
 }
 
 export async function createWorktree(root: string, target: string, commit: string): Promise<void> {

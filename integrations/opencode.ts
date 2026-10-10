@@ -98,6 +98,7 @@ export async function prepareOpenCodePlugin(
     env: {
       RIVALCODE_CAPTURE_PATH: capture,
       RIVALCODE_PROJECT_ROOT: root,
+      RIVALCODE_REDACTION_ROOT: resolve(ctx.repositoryRoot ?? ctx.cwd),
       RIVALCODE_SESSION_ID: ctx.sessionId,
       RIVALCODE_CAPTURE_MAX_BYTES: String(ctx.config.limits.maxArtifactBytes),
       RIVALCODE_EVENT_MAX_BYTES: String(ctx.config.limits.maxEventBytes),

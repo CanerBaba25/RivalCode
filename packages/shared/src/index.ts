@@ -87,6 +87,7 @@ export interface UsageRecord {
   cachedInputTokens?: number
   totalTokens?: number
   model?: string
+  modelSource?: 'configured' | 'native'
   costUsd?: number
   costType?: 'provider_reported' | 'estimated' | 'unknown'
   source?: string
@@ -159,6 +160,7 @@ export interface Session {
   agentVersion: string | null
   task: string | null
   model?: string
+  modelSource?: 'configured' | 'native'
   baseCommit: string
   startedAt: string
   finishedAt?: string
@@ -240,6 +242,7 @@ export interface PreparedRun {
 export interface RunContext {
   sessionId: string
   cwd: string
+  repositoryRoot?: string
   task: string
   config: RivalConfig
   model?: string

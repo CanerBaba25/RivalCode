@@ -125,7 +125,7 @@ responses or sample sessions inserted on startup.
 | Codex       | `exec --json`                           | Turn tokens; cost/model may be unavailable           |
 | Claude Code | Headless `stream-json`                  | Terminal usage and explicitly estimated client cost  |
 | Gemini CLI  | Headless `stream-json`                  | Final token counts; native monetary cost unavailable |
-| OpenCode    | JSON events + temporary observer plugin | Step usage and native reported accounting            |
+| OpenCode    | JSON events + temporary observer plugin | Step tokens and native API-equivalent cost estimate  |
 
 Adapters expose their capture capabilities honestly. Missing optional agents do
 not block an installed one. Existing vendor settings and permission policy are

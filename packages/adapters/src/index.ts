@@ -1,4 +1,5 @@
 import { mkdir, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import type {
   AgentAdapter,
@@ -19,6 +20,7 @@ import {
   object,
   text,
   toolEvents,
+  toolInput,
   usage
 } from './normalize.js'
 import { prepareOpenCodePlugin, uninstallHooks } from '../../../integrations/opencode.js'
@@ -37,6 +39,19 @@ const capabilities = (overrides: Partial<AgentCapabilities> = {}): AgentCapabili
   interactiveMode: true,
   ...overrides
 })
+const toolKey = (id: string) => createHash('sha256').update(id).digest('hex')
+
+function rememberTool(
+  pending: Map<string, { name?: string; input: unknown }>,
+  id: string,
+  name: string | undefined,
+  input: unknown
+) {
+  pending.set(toolKey(id), { name, input: toolInput(input) })
+
+  // Completed calls are removed immediately; cap unfinished metadata from malformed streams.
+  if (pending.size > 128) pending.delete(pending.keys().next().value!)
+}
 
 abstract class NativeAdapter implements AgentAdapter {
   abstract id: AgentId
@@ -68,7 +83,7 @@ abstract class NativeAdapter implements AgentAdapter {
     const events = captureEvent(record) ?? this.parseNative(record)
     return events.filter((item) => {
       if (item.nativeId === undefined) return true
-      const key = `${item.type}:${item.nativeId}`
+      const key = `${item.type}:${toolKey(item.nativeId)}`
       if (this.captured.has(key)) return false
       this.captured.add(key)
       // Cap state for extremely long sessions. Session event persistence remains bounded separately.
@@ -331,7 +346,7 @@ export class ClaudeAdapter extends NativeAdapter {
         }
         if (value.type === 'tool_use') {
           const name = text(value.name)
-          this.tools.set(id, { name, input: value.input })
+          rememberTool(this.tools, id, name, value.input)
           return toolEvents(raw, 'started', name, value.input, id)
         }
         return []
@@ -342,7 +357,8 @@ export class ClaudeAdapter extends NativeAdapter {
         const value = object(block)
         if (value.type !== 'tool_result') return []
         const id = text(value.tool_use_id)
-        const previous = id ? this.tools.get(id) : undefined
+        const previous = id ? this.tools.get(toolKey(id)) : undefined
+        if (id) this.tools.delete(toolKey(id))
         const output =
           typeof value.content === 'string'
             ? value.content
@@ -361,6 +377,7 @@ export class ClaudeAdapter extends NativeAdapter {
         )
       })
     if (raw.type === 'result') {
+      this.tools.clear()
       const failed =
         raw.is_error === true ||
         (typeof raw.subtype === 'string' && raw.subtype.startsWith('error'))
@@ -492,12 +509,13 @@ export class GeminiAdapter extends NativeAdapter {
     if (raw.type === 'tool_use') {
       const id = text(raw.tool_id)
       const name = text(raw.tool_name)
-      if (id) this.tools.set(id, { name, input: raw.parameters })
+      if (id) rememberTool(this.tools, id, name, raw.parameters)
       return toolEvents(raw, 'started', name, raw.parameters, id)
     }
     if (raw.type === 'tool_result') {
       const id = text(raw.tool_id)
-      const previous = id ? this.tools.get(id) : undefined
+      const previous = id ? this.tools.get(toolKey(id)) : undefined
+      if (id) this.tools.delete(toolKey(id))
       const result = toolEvents(
         raw,
         'finished',
@@ -526,6 +544,7 @@ export class GeminiAdapter extends NativeAdapter {
         )
       ]
     if (raw.type === 'result') {
+      this.tools.clear()
       const stats = object(raw.stats)
       const result = [
         event(
@@ -567,7 +586,7 @@ export class OpenCodeAdapter extends NativeAdapter {
   id = 'opencode' as const
   displayName = 'OpenCode'
   executable = 'opencode'
-  capabilities = capabilities({ providerCost: true })
+  capabilities = capabilities()
   async prepareRun(ctx: RunContext): Promise<PreparedRun> {
     const extras = this.extras(ctx)
     const integration = await prepareOpenCodePlugin(ctx)
@@ -609,11 +628,15 @@ export class OpenCodeAdapter extends NativeAdapter {
       const cacheWrite = number(cache.write)
       const input =
         baseInput === undefined ? undefined : baseInput + (cached ?? 0) + (cacheWrite ?? 0)
+      const visibleOutput = number(tokens.output)
+      // OpenCode reports billable reasoning tokens separately from visible output.
+      const output =
+        visibleOutput === undefined ? undefined : visibleOutput + (number(tokens.reasoning) ?? 0)
       const result = [
         event(
           'usage',
           {
-            ...usage(input, number(tokens.output), cached),
+            ...usage(input, output, cached),
             model: text(part.modelID) ?? text(raw.model),
             semantics: 'incremental',
             scope: 'step'
@@ -628,9 +651,9 @@ export class OpenCodeAdapter extends NativeAdapter {
             'cost',
             {
               costUsd: number(part.cost),
-              costType: 'provider_reported',
+              costType: 'estimated',
               semantics: 'incremental',
-              provenance: 'OpenCode reported model accounting; not an invoice'
+              provenance: 'OpenCode model token-price estimate; not an invoice'
             },
             raw,
             id ? `${id}:cost` : undefined

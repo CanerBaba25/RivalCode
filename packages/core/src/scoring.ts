@@ -43,9 +43,23 @@ export function scoreRun(
     : 0
   const forbidden = input.findings.some((f) => f.type === 'forbidden_path')
   const large = input.findings.some((f) => f.type === 'large_patch')
+  const failedToolIds = new Set(
+    input.events
+      .filter(
+        (event) =>
+          (event.type === 'command_finished' || event.type === 'tool_finished') &&
+          (event.payload.failed === true ||
+            event.payload.success === false ||
+            (typeof event.payload.exitCode === 'number' && event.payload.exitCode !== 0))
+      )
+      .map((event) => event.payload.toolId)
+      .filter((id) => typeof id === 'string')
+  )
   const failures = input.events.filter(
     (e) =>
-      (e.type === 'error' && e.payload.severity !== 'warning') ||
+      (e.type === 'error' &&
+        e.payload.severity !== 'warning' &&
+        !failedToolIds.has(e.payload.toolId as string)) ||
       (e.type === 'command_finished' &&
         (e.payload.failed === true ||
           e.payload.success === false ||

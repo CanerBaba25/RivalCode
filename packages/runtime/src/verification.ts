@@ -76,12 +76,12 @@ export async function executeVerification(
 
     const stdout = bounded(String(redact(result.stdout)), config.limits.maxArtifactBytes)
     const stderr = bounded(String(redact(result.stderr)), config.limits.maxArtifactBytes)
-    const filePrefix = `${phase}-${spec.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)}-${id}`
+    const filePrefix = `${phase}-${id}`
     const stdoutPath = path.join(actualDir, `${filePrefix}.stdout.txt`)
     const stderrPath = path.join(actualDir, `${filePrefix}.stderr.txt`)
 
-    await writeFile(stdoutPath, stdout, { flag: 'wx' })
-    await writeFile(stderrPath, stderr, { flag: 'wx' })
+    await writeFile(stdoutPath, stdout, { flag: 'wx', mode: 0o600 })
+    await writeFile(stderrPath, stderr, { flag: 'wx', mode: 0o600 })
 
     const run: VerificationRun = {
       id,

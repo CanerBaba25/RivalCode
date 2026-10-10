@@ -11,34 +11,61 @@ export interface DiffFile {
     next?: number
   }[]
 }
+
+function gitPath(value: string): string {
+  if (!value.startsWith('"') || !value.endsWith('"')) return value
+
+  const bytes: number[] = []
+  const encoder = new TextEncoder()
+  const escapes: Record<string, string> = {
+    a: '\u0007',
+    b: '\b',
+    t: '\t',
+    n: '\n',
+    v: '\u000b',
+    f: '\f',
+    r: '\r'
+  }
+
+  // Git quotes UTF-8 bytes with octal escapes rather than JSON Unicode escapes.
+  for (const token of value.slice(1, -1).matchAll(/\\([0-7]{1,3}|.)|([^\\]+)/g)) {
+    const escaped = token[1]
+    if (escaped && /^[0-7]{1,3}$/.test(escaped)) bytes.push(parseInt(escaped, 8))
+    else bytes.push(...encoder.encode(escaped ? (escapes[escaped] ?? escaped) : token[2]))
+  }
+
+  return new TextDecoder().decode(new Uint8Array(bytes))
+}
+
 export function parseDiff(diff: string): DiffFile[] {
   const files: DiffFile[] = []
   let current: DiffFile | undefined
   let oldLine = 0
   let newLine = 0
+  let inHunk = false
   for (const text of diff.split('\n')) {
     if (text.startsWith('diff --git ')) {
-      const match = /^diff --git (?:(?:"a\/(?:\\.|[^"\\])+"|a\/.+?)) (?:"b\/(.*)"|b\/(.*))$/.exec(
-        text
-      )
-      current = { path: match?.[1] ?? match?.[2] ?? text.slice(11), lines: [] }
+      const match = /^diff --git (?:"(?:\\.|[^"\\])*"|a\/.+?) ("(?:\\.|[^"\\])*"|b\/.+)$/.exec(text)
+      current = { path: gitPath(match?.[1] ?? text.slice(11)).replace(/^b\//, ''), lines: [] }
       files.push(current)
+      inHunk = false
       continue
     }
     if (!current) continue
-    if (text.startsWith('+++ b/')) current.path = text.slice(6)
+    const fileHeader = inHunk ? null : /^\+\+\+ ("(?:\\.|[^"\\])*"|[^\t]+)(?:\t.*)?$/.exec(text)
+    if (fileHeader?.[1] && fileHeader[1] !== '/dev/null')
+      current.path = gitPath(fileHeader[1]).replace(/^b\//, '')
     const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text)
     if (hunk) {
       oldLine = Number(hunk[1])
       newLine = Number(hunk[2])
+      inHunk = Number.isSafeInteger(oldLine) && Number.isSafeInteger(newLine)
       current.lines.push({ text, kind: 'header' })
-    } else if (text.startsWith('+++') || text.startsWith('---'))
-      current.lines.push({ text, kind: 'meta' })
-    else if (text.startsWith('+'))
+    } else if (inHunk && text.startsWith('+'))
       current.lines.push({ text: text.slice(1), kind: 'add', next: newLine++ })
-    else if (text.startsWith('-'))
+    else if (inHunk && text.startsWith('-'))
       current.lines.push({ text: text.slice(1), kind: 'delete', old: oldLine++ })
-    else if (text.startsWith(' '))
+    else if (inHunk && text.startsWith(' '))
       current.lines.push({ text: text.slice(1), kind: 'context', old: oldLine++, next: newLine++ })
     else if (text) current.lines.push({ text, kind: 'meta' })
   }

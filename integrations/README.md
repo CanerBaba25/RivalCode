@@ -8,7 +8,7 @@ sign in, replace credentials, or run a paid request during adapter detection.
 | Codex       | `exec --json`                                    | `login status` exit code                 | Unknown unless explicitly estimated from configured pricing |
 | Claude Code | `-p --output-format stream-json --verbose`       | `auth status` boolean only               | Claude client estimate, cumulative                          |
 | Gemini CLI  | `-p --output-format stream-json`                 | Configuration/cache presence, unverified | Unknown unless explicitly estimated from configured pricing |
-| OpenCode    | `run --format json` and a temporary local plugin | `auth list`, unverified                  | Reported model accounting, incremental                      |
+| OpenCode    | `run --format json` and a temporary local plugin | `auth list`, unverified                  | Model token-price estimate, incremental                     |
 
 Native streams are parsed incrementally with bounded line sizes. Unknown event
 schemas are ignored, while malformed/oversized JSONL produces a capture error
@@ -28,7 +28,9 @@ terminal usage records are cumulative and replace earlier totals. Cache reads
 are subsets of the normalized input total. Claude cache-creation and OpenCode
 cache-write tokens are added to their provider's uncached input to make that
 relationship explicit. Token counts remain unknown when the native schema does
-not expose them. Cost provenance is separate from subscription billing.
+not expose them. OpenCode's separately reported reasoning token count is included
+in output totals without retaining reasoning content. Cost provenance is separate
+from subscription billing.
 
 The OpenCode adapter creates a uniquely named `.opencode/plugins/rivalcode-*.js`
 file using exclusive creation. It uses only Node built-ins and does not alter
@@ -77,3 +79,4 @@ Sources:
 - [Gemini stream event types](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/output/types.ts)
 - [OpenCode plugins](https://opencode.ai/docs/plugins/)
 - [OpenCode non-interactive stream implementation](https://github.com/anomalyco/opencode/blob/dev/packages/cli/src/run/noninteractive.ts)
+- [OpenCode token and cost calculation](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/session/usage.ts)

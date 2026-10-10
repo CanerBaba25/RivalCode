@@ -25,9 +25,7 @@ export function detectFindings(
   ) => findings.push({ id: randomUUID(), type, severity, title, detail, evidence })
   const commands = new Map<string, NormalizedEvent[]>()
   for (const event of events.filter((e) => e.type === 'command_finished')) {
-    const command = String(event.payload.command ?? '')
-      .trim()
-      .replace(/\s+/g, ' ')
+    const command = String(event.payload.command ?? '').trim()
     if (command) commands.set(command, [...(commands.get(command) ?? []), event])
   }
   for (const [command, observations] of commands) {
@@ -147,8 +145,15 @@ export function detectFindings(
       /(^|\/)(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.(toml|lock)|go\.(mod|sum))$/.test(
         path
       ) &&
-      changes.some((e) => ['add', 'A'].includes(String(e.payload.status))) &&
-      changes.some((e) => ['delete', 'D'].includes(String(e.payload.status)))
+      changes.some(
+        (event, index) =>
+          ['add', 'A'].includes(String(event.payload.status ?? event.payload.kind)) &&
+          changes
+            .slice(index + 1)
+            .some((later) =>
+              ['delete', 'D'].includes(String(later.payload.status ?? later.payload.kind))
+            )
+      )
     )
       add(
         'dependency_churn',

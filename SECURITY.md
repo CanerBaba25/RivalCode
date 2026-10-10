@@ -18,6 +18,12 @@ cannot be disabled with a configuration flag. Custom patterns can cover
 organization-specific secrets. No pattern detector guarantees that every
 arbitrary secret is recognizable; inspect artifacts before sharing them.
 
+The dashboard and exports reapply current redaction and output privacy settings
+to archived records. Integration capture reads both the original repository and
+participant worktree dotenv values before writing observer records. Generated
+session IDs and timestamps remain intact; these are protocol fields, not captured
+credentials. Disabling prompt storage does not erase previously stored history.
+
 Git snapshots have a separate retention boundary. To compare an existing dirty
 checkout accurately, RivalCode creates private snapshot commits with a temporary
 Git index. Staging snapshots and final diffs writes eligible file contents into

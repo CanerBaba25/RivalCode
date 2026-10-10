@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, realpathSync } from 'node:fs'
+import { lstatSync, mkdirSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import type {
@@ -221,44 +221,59 @@ export class Store {
       throw new Error('RivalCode state directory escapes the repository')
 
     this.dbPath = path.join(actualState, 'rivalcode.sqlite')
-    for (const filename of [this.dbPath, this.dbPath + '-wal', this.dbPath + '-shm'])
-      if (existsSync(filename) && lstatSync(filename).isSymbolicLink())
-        throw new Error('Refusing a symlinked RivalCode database')
+    for (const filename of [this.dbPath, this.dbPath + '-wal', this.dbPath + '-shm']) {
+      let metadata
 
-    this.db = new DatabaseSync(this.dbPath)
-    this.db.exec(
-      'PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;'
-    )
-    this.db.exec(
-      'CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)'
-    )
+      try {
+        metadata = lstatSync(filename)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw error
+      }
 
-    const version = Number(
-      this.db.prepare('SELECT COALESCE(MAX(version),0) AS version FROM schema_migrations').get()
-        ?.version ?? 0
-    )
-
-    if (version > migrations.at(-1)!.version) {
-      this.db.close()
-      throw new Error('Database schema is newer than this RivalCode version')
+      if (metadata.isSymbolicLink()) throw new Error('Refusing a symlinked RivalCode database')
+      if (metadata.nlink > 1) throw new Error('Refusing a hard-linked RivalCode database')
+      if (!metadata.isFile()) throw new Error('RivalCode database must be a regular file')
     }
 
-    for (const migration of migrations)
-      if (migration.version > version)
-        this.transaction(() => {
-          if (
-            this.db
-              .prepare('SELECT version FROM schema_migrations WHERE version=?')
-              .get(migration.version)
-          )
-            return
+    this.db = new DatabaseSync(this.dbPath)
+    try {
+      this.db.exec(
+        'PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;'
+      )
+      this.db.exec(
+        'CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)'
+      )
 
-          this.db.exec(migration.sql)
-          this.db
-            .prepare('INSERT INTO schema_migrations VALUES (?,?)')
-            .run(migration.version, new Date().toISOString())
-          this.db.exec(`PRAGMA user_version=${migration.version}`)
-        })
+      const version = Number(
+        this.db.prepare('SELECT COALESCE(MAX(version),0) AS version FROM schema_migrations').get()
+          ?.version ?? 0
+      )
+
+      if (version > migrations.at(-1)!.version) {
+        throw new Error('Database schema is newer than this RivalCode version')
+      }
+
+      for (const migration of migrations)
+        if (migration.version > version)
+          this.transaction(() => {
+            if (
+              this.db
+                .prepare('SELECT version FROM schema_migrations WHERE version=?')
+                .get(migration.version)
+            )
+              return
+
+            this.db.exec(migration.sql)
+            this.db
+              .prepare('INSERT INTO schema_migrations VALUES (?,?)')
+              .run(migration.version, new Date().toISOString())
+            this.db.exec(`PRAGMA user_version=${migration.version}`)
+          })
+    } catch (error) {
+      this.db.close()
+      throw error
+    }
   }
 
   private transaction(callback: () => void): void {
@@ -648,8 +663,12 @@ export class Store {
            AVG(u.cost_usd) AS averageCostUsd,
            CASE
              WHEN COUNT(u.cost_usd)=0 THEN 'unknown'
-             WHEN COUNT(DISTINCT u.cost_type)>1 THEN 'mixed'
-             ELSE COALESCE(MAX(u.cost_type),'unknown')
+             WHEN COUNT(DISTINCT CASE
+               WHEN u.cost_usd IS NOT NULL THEN COALESCE(u.cost_type,'unknown')
+             END)>1 THEN 'mixed'
+             ELSE COALESCE(MAX(CASE
+               WHEN u.cost_usd IS NOT NULL THEN u.cost_type
+             END),'unknown')
            END AS costType
          FROM sessions s
          JOIN repositories r ON r.id=s.repository_id

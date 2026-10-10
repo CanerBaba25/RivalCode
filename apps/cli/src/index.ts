@@ -1,5 +1,5 @@
-import { Command, InvalidArgumentError } from 'commander'
-import { readFile, writeFile, access } from 'node:fs/promises'
+import { Command, CommanderError, InvalidArgumentError } from 'commander'
+import { open, writeFile, access } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
@@ -14,11 +14,17 @@ import {
   defaultConfig
 } from '@rivalcode/runtime'
 import { detectAdapters, getAdapter, uninstallHooks } from '@rivalcode/adapters'
-import { runAgent, runBattle, cleanupRuns, exportRecord } from '@rivalcode/core'
+import { runAgent, runBattle, cleanupRuns, exportRecord, redactSession } from '@rivalcode/core'
 import { startServer } from '@rivalcode/server'
 import type { AgentId } from '@rivalcode/shared'
 
 const program = new Command()
+program.exitOverride().configureOutput({
+  outputError: () => {
+    // Report parser errors through the same redaction boundary as command failures.
+  }
+})
+
 program
   .name('rivalcode')
   .description('Benchmark coding agents on your repository. Same task. Real evidence.')
@@ -30,15 +36,22 @@ const root = async () => gitRoot(path.resolve(String(program.opts().repo)))
 const json = (value: unknown) => console.log(JSON.stringify(value, null, 2))
 
 async function diagnosticRedactor(cwd: string) {
+  let repository = cwd
+  try {
+    repository = await gitRoot(cwd)
+  } catch {
+    // Doctor also works outside a Git repository.
+  }
+
   let config = structuredClone(defaultConfig)
   try {
-    config = await loadConfig(cwd)
+    config = await loadConfig(repository)
   } catch {
     // Invalid configuration still needs credential-safe diagnostics.
   }
 
   try {
-    return await createRedactor(cwd, config)
+    return await createRedactor(repository, config)
   } catch {
     return (_value: unknown) =>
       'Diagnostics withheld because secret protection could not be initialized'
@@ -71,7 +84,31 @@ const abortable = async <T>(work: (signal: AbortSignal) => Promise<T>) => {
 async function taskInput(options: { task?: string; taskFile?: string }) {
   if (Boolean(options.task) === Boolean(options.taskFile))
     throw new Error('Provide exactly one of --task or --task-file')
-  const task = options.task ?? (await readFile(path.resolve(options.taskFile!), 'utf8'))
+  let task = options.task
+
+  if (task === undefined) {
+    const file = await open(path.resolve(options.taskFile!), 'r')
+    try {
+      const maximum = 1024 * 1024
+      const info = await file.stat()
+      if (!info.isFile() || info.size > maximum)
+        throw new Error('Task file must be a regular file under 1 MiB')
+
+      const bytes = Buffer.alloc(maximum + 1)
+      let length = 0
+      while (length < bytes.length) {
+        const result = await file.read(bytes, length, bytes.length - length, length)
+        if (!result.bytesRead) break
+        length += result.bytesRead
+      }
+
+      if (length > maximum) throw new Error('Task file exceeds 1 MiB')
+      task = bytes.subarray(0, length).toString('utf8')
+    } finally {
+      await file.close()
+    }
+  }
+
   if (!task.trim() || Buffer.byteLength(task) > 1024 * 1024)
     throw new Error('Task must be nonempty and under 1 MiB')
   return task
@@ -167,7 +204,8 @@ program
   .description('List installed supported agents and observable capture capabilities')
   .option('--json', 'machine-readable report')
   .action(async (options) => {
-    const agents = await detectAdapters()
+    const redact = await diagnosticRedactor(path.resolve(String(program.opts().repo)))
+    const agents = redact(await detectAdapters()) as Awaited<ReturnType<typeof detectAdapters>>
     if (options.json) json(agents)
     else
       for (const agent of agents)
@@ -262,7 +300,11 @@ program
   .option('--limit <count>', 'page size', positive, 50)
   .option('--json', 'machine-readable page')
   .action(async (options) => {
-    const store = new Store(await root())
+    const repo = await root()
+    const config = await loadConfig(repo)
+    const redact = await createRedactor(repo, config)
+    const store = new Store(repo)
+
     try {
       store.recoverIncomplete()
       const page = store.listSessions({
@@ -273,9 +315,11 @@ program
         incomplete: options.incomplete,
         limit: options.limit
       })
-      if (options.json) json(page)
+      const sessions = page.items.map((session) => redactSession(session, redact, config))
+
+      if (options.json) json({ ...page, items: sessions })
       else {
-        for (const session of page.items)
+        for (const session of sessions)
           console.log(
             `${session.id}  ${session.demo ? 'Demo Agent' : session.agentId}  ${session.status}  ${session.score?.total ?? 'N/A'}  ${(session.durationMs / 1000).toFixed(1)}s  ${session.task ?? '[prompt not stored]'}`
           )
@@ -376,6 +420,8 @@ program
   })
 
 program.parseAsync().catch(async (error) => {
+  if (error instanceof CommanderError && error.exitCode === 0) return
+
   const redact = await diagnosticRedactor(path.resolve(String(program.opts().repo)))
   console.error(`RivalCode: ${redact(error instanceof Error ? error.message : String(error))}`)
   if (program.opts().debug && error instanceof Error) console.error(redact(error.stack))

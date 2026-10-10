@@ -48,5 +48,12 @@ decoded incrementally and never stored as a raw transcript. Verification logs,
 event JSONL and final patches have byte caps. Complete timelines are stored in
 SQLite and loaded in pages; large patches are loaded only when requested.
 
+Privacy filtering preserves generated IDs, timestamps and protocol fields while
+redacting user text, paths and configuration. This keeps event and verification
+references intact even when a short dotenv value matches part of an identifier.
+Artifact files are replaced atomically without writing through existing links.
+Capture failures stop the agent process and retain a failed session; an evidence
+write failure also prevents the result from being eligible to win.
+
 See [scoring](scoring.md) for deterministic calculations and [adapters](adapters.md)
 for fidelity and provider accounting limits.

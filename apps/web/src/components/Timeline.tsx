@@ -1,5 +1,5 @@
 import { Icon, State, Empty, request, duration, Revision } from '../lib/common.js'
-import { useContext, useState, useEffect, useMemo } from 'react'
+import { useContext, useState, useEffect, useMemo, useRef } from 'react'
 import type { Session, NormalizedEvent, Page } from '@rivalcode/shared'
 
 function eventOutcome(event: NormalizedEvent): 'failed' | 'passed' | '' {
@@ -107,6 +107,7 @@ export function Timeline({
   const [playing, setPlaying] = useState(false)
   const [speed, setSpeed] = useState(1)
   const [limit, setLimit] = useState(500)
+  const consumedFocus = useRef<string[] | undefined>(undefined)
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true)
@@ -123,8 +124,10 @@ export function Timeline({
         expected = page.total
         if (result.length >= page.total || page.items.length === 0) break
       }
-      setEvents(result)
-      setTotal(expected)
+      if (!controller.signal.aborted) {
+        setEvents(result)
+        setTotal(expected)
+      }
     }
     void load()
       .catch((caught: unknown) => {
@@ -145,14 +148,19 @@ export function Timeline({
     [events, type, source]
   )
   useEffect(() => {
-    if (focusIds?.length) {
-      setType('all')
-      setSource('all')
+    if (focusIds?.length && consumedFocus.current !== focusIds) {
       const index = events.findIndex((event) => focusIds.includes(event.id))
-      if (index >= 0) setCursor(index)
-      else if (!loading && events.length < total) setLimit((value) => value + 500)
+      if (index >= 0) {
+        setType('all')
+        setSource('all')
+        setPlaying(false)
+        setCursor(index)
+        consumedFocus.current = focusIds
+      } else if (!loading && !error && events.length < total) {
+        setLimit((value) => value + 500)
+      }
     }
-  }, [focusIds, events, loading, total])
+  }, [focusIds, events, loading, total, error])
   useEffect(() => {
     setCursor((previous) => Math.min(previous, Math.max(0, filtered.length - 1)))
   }, [filtered.length])

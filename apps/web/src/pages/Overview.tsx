@@ -11,7 +11,8 @@ import {
   names,
   duration,
   number,
-  cost
+  cost,
+  costProvenance
 } from '../lib/common.js'
 import type { OverviewData } from '../lib/common.js'
 import { SessionTable } from '../components/SessionTable.js'
@@ -74,12 +75,7 @@ export function Overview() {
               value={cost(data.totalCostUsd, data.costType)}
               detail={
                 <>
-                  {data.costAvailableRuns} runs ·{' '}
-                  {data.costType === 'estimated'
-                    ? 'includes API-equivalent estimates*'
-                    : data.costType === 'provider_reported'
-                      ? 'provider reported'
-                      : 'not available'}
+                  {data.costAvailableRuns} runs · {costProvenance(data.costType, data.totalCostUsd)}
                 </>
               }
               icon="chart"

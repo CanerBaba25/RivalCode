@@ -2,7 +2,7 @@ import { lstat, open, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { Store, createRedactor, loadConfig } from '@rivalcode/runtime'
 import type { Session } from '@rivalcode/shared'
-import { makeEvent } from './events.js'
+import { redactBattle, redactEvent, redactSession } from './privacy.js'
 
 const escape = (value: unknown) =>
   String(value ?? 'N/A')
@@ -36,8 +36,8 @@ export async function exportRecord(
       for (let offset = 0; ; offset += 500) {
         const page = store.getEvents(item.id, 500, offset)
         for (const original of page.items) {
-          const safe = makeEvent(original, item.id, item.agentId, config, redact)
-          if (safe) events.push({ ...safe, id: original.id })
+          const safe = redactEvent(original, config, redact)
+          if (safe) events.push(safe)
         }
         if (offset + page.items.length >= page.total) break
       }
@@ -77,28 +77,33 @@ export async function exportRecord(
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
-      records.push({ ...item, events, diff })
+      records.push({ ...redactSession(item, redact, config), events, diff: String(redact(diff)) })
     }
+    const safeBattle = battle ? redactBattle(battle, redact, config) : undefined
     if (format === 'json')
-      return JSON.stringify(redact(battle ? { battle, sessions: records } : records[0]), null, 2)
+      return JSON.stringify(
+        safeBattle ? { battle: safeBattle, sessions: records } : records[0],
+        null,
+        2
+      )
     if (format !== 'markdown') throw new Error('Export format must be json or markdown')
     const lines = [
       battle ? '# RivalCode Battle' : '# RivalCode Session',
       '',
-      `Task: ${escape(battle?.task ?? session?.task ?? '[not stored]')}`,
-      `Base commit: ${battle?.baseCommit ?? session?.baseCommit}`,
+      `Task: ${escape(safeBattle?.task ?? records[0]?.task ?? '[not stored]')}`,
+      `Base commit: ${safeBattle?.baseCommit ?? records[0]?.baseCommit}`,
       '',
       '| Agent | Result | Required checks | Score | Duration | Files | Tokens | Cost |',
       '|---|---|---|---:|---:|---:|---:|---|'
     ]
-    for (const item of sessions)
+    for (const item of records)
       lines.push(
         `| ${item.demo ? 'Demo Agent' : item.agentId} | ${item.status} | ${item.score?.verificationAvailable ? (item.score.requiredPassed ? 'PASS' : 'FAIL') : 'N/A'} | ${item.score?.total ?? 'N/A'} | ${(item.durationMs / 1000).toFixed(1)}s | ${item.files.length} | ${item.usage.totalTokens ?? 'N/A'} | ${escape(cost(item))} |`
       )
     if (battle)
       lines.push(
         '',
-        `Winner: ${battle.winnerSessionId ? sessions.find((s) => s.id === battle.winnerSessionId)?.agentId : battle.tiedSessionIds.length ? 'Tie' : 'No eligible winner'}`,
+        `Winner: ${battle.winnerSessionId ? records.find((s) => s.id === battle.winnerSessionId)?.agentId : battle.tiedSessionIds.length ? 'Tie' : 'No eligible winner'}`,
         '',
         'Ranking: required checks pass first, score, fewer failed verification attempts, duration, patch size. Exact ties remain ties.'
       )
@@ -134,7 +139,7 @@ export async function exportRecord(
         '```'
       )
     }
-    return String(redact(lines.join('\n')))
+    return lines.join('\n')
   } finally {
     store.close()
   }

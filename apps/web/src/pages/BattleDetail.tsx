@@ -12,6 +12,8 @@ import {
   duration,
   number,
   cost,
+  costProvenance,
+  modelLabel,
   date,
   shortId
 } from '../lib/common.js'
@@ -186,7 +188,9 @@ export function BattleDetail({ id }: { id: string }) {
                         className={session.id === battle.winnerSessionId ? 'winner-column' : ''}
                       >
                         <Agent id={session.agentId} />
-                        <span className="subtext">{session.model ?? 'Model not reported'}</span>
+                        <span className="subtext">
+                          {modelLabel(session.model, session.modelSource)}
+                        </span>
                         <span className="rank-label">
                           {session.id === battle.winnerSessionId
                             ? 'WINNER'
@@ -403,7 +407,11 @@ export function BattleEvidence({ selection }: { selection: EvidenceSelection }) 
           </div>
           <div>
             <dt>Cost type</dt>
-            <dd>{session.usage.costType?.replaceAll('_', ' ') ?? 'unavailable'}</dd>
+            <dd>{costProvenance(session.usage.costType, session.usage.costUsd)}</dd>
+          </div>
+          <div>
+            <dt>Pricing model</dt>
+            <dd>{modelLabel(session.usage.model, session.usage.modelSource)}</dd>
           </div>
           <div>
             <dt>Source</dt>

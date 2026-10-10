@@ -4,10 +4,32 @@ import { serve } from '@hono/node-server'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { resolve, relative, isAbsolute, join } from 'node:path'
-import { Store } from '@rivalcode/runtime'
+import { Store, createRedactor, loadConfig } from '@rivalcode/runtime'
 import { detectAdapters } from '@rivalcode/adapters'
-import { exportRecord } from '@rivalcode/core'
-import type { Battle, SessionFilter, Session, UsageRecord } from '@rivalcode/shared'
+import {
+  exportRecord,
+  redactBattle,
+  redactEvent,
+  redactRepository,
+  redactSession
+} from '@rivalcode/core'
+import type {
+  Battle,
+  NormalizedEvent,
+  RivalConfig,
+  SessionFilter,
+  Session,
+  UsageRecord
+} from '@rivalcode/shared'
+
+type Redactor = (value: unknown) => unknown
+type CapturePrivacy = { config: RivalConfig; redact: Redactor }
+type PrivacyEnv = { Variables: { privacy: CapturePrivacy } }
+
+const safeSession = (session: Session, privacy: CapturePrivacy) =>
+  redactSession(session, privacy.redact, privacy.config)
+const safeBattle = (battle: Battle, privacy: CapturePrivacy) =>
+  redactBattle(battle, privacy.redact, privacy.config)
 
 const agents = new Set(['codex', 'claude', 'gemini', 'opencode', 'demo'])
 const statuses = new Set(['preparing', 'running', 'verifying', 'completed', 'failed', 'aborted'])
@@ -59,8 +81,13 @@ function filters(query: Record<string, string>): SessionFilter {
       if (key === 'status' && !statuses.has(value)) throw new InputError('Unknown status.')
       Object.assign(filter, { [key]: value })
     } else if (key === 'from' || key === 'to') {
-      if (!/^\d{4}-\d{2}-\d{2}(?:T[^\s]+)?$/.test(value) || !Number.isFinite(Date.parse(value)))
-        throw new InputError('Date filters must use ISO dates.')
+      if (
+        !/^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/.test(
+          value
+        ) ||
+        !Number.isFinite(Date.parse(value))
+      )
+        throw new InputError('Date filters must use ISO dates or timestamps with a timezone.')
       const day = value.slice(0, 10)
       if (new Date(`${day}T00:00:00.000Z`).toISOString().slice(0, 10) !== day)
         throw new InputError('Date filters must contain a valid calendar date.')
@@ -100,7 +127,7 @@ function filters(query: Record<string, string>): SessionFilter {
   return filter
 }
 function localHost(host: string | undefined): boolean {
-  if (!host) return false
+  if (!host || !/^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i.test(host)) return false
   try {
     return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(`http://${host}`).hostname)
   } catch {
@@ -117,7 +144,9 @@ function inside(root: string, file: string): boolean {
 }
 async function readDiff(store: Store, session: Session): Promise<string> {
   const stateRoot = await realpath(store.stateDir)
-  const directory = resolve(session.artifactDir)
+  const directory = session.artifactDir.includes('[REDACTED]')
+    ? join(stateRoot, 'sessions', recordId(session.id))
+    : resolve(session.artifactDir)
   if (!inside(stateRoot, directory))
     throw new InputError('Artifact path is outside this repository state directory.')
   const resolvedDirectory = await realpath(directory).catch(() => null)
@@ -149,11 +178,11 @@ async function revision(store: Store): Promise<string> {
 }
 
 /** Read-only localhost API. The CLI owns writes; SSE observes persisted changes across processes. */
-export function createApp(root: string, webDir?: string): Hono {
+export function createApp(root: string, webDir?: string): Hono<PrivacyEnv> {
   const store = new Store(resolve(root))
-  const app = new Hono()
-  const battleSummary = (battle: Battle) => ({
-    ...battle,
+  const app = new Hono<PrivacyEnv>()
+  const battleSummary = (battle: Battle, privacy: CapturePrivacy) => ({
+    ...safeBattle(battle, privacy),
     durationMs: battle.finishedAt
       ? Math.max(0, Date.parse(battle.finishedAt) - Date.parse(battle.startedAt))
       : null,
@@ -182,7 +211,12 @@ export function createApp(root: string, webDir?: string): Hono {
       try {
         const parsed = new URL(origin)
         const target = new URL(`http://${host}`)
-        if (parsed.protocol !== 'http:' || !localHost(parsed.host) || parsed.port !== target.port)
+        if (
+          parsed.protocol !== 'http:' ||
+          parsed.origin !== origin ||
+          !localHost(parsed.host) ||
+          parsed.port !== target.port
+        )
           return context.json({ error: 'Cross-origin requests are not allowed.' }, 403)
       } catch {
         return context.json({ error: 'Invalid request origin.' }, 403)
@@ -207,6 +241,14 @@ export function createApp(root: string, webDir?: string): Hono {
       500
     )
   })
+  app.use('/api/*', async (context, next) => {
+    // Re-read privacy settings and dotenv literals to protect archived records when
+    // local credentials change while the dashboard is open.
+    const config = await loadConfig(root)
+    const redact = await createRedactor(root, config)
+    context.set('privacy', { config, redact })
+    await next()
+  })
   app.get('/api/health', (context) => context.json({ ok: true, version: '0.1.0', local: true }))
   let detection: ReturnType<typeof detectAdapters> | undefined
   let detectedAt = 0
@@ -217,13 +259,25 @@ export function createApp(root: string, webDir?: string): Hono {
     }
     return context.json(await detection)
   })
-  app.get('/api/repositories', (context) => context.json(store.repositories()))
-  app.get('/api/sessions', (context) =>
-    context.json(store.listSessions(filters(context.req.query())))
+  app.get('/api/repositories', (context) =>
+    context.json(
+      store
+        .repositories()
+        .map((repository) => redactRepository(repository, context.get('privacy').redact))
+    )
   )
+  app.get('/api/sessions', (context) => {
+    const page = store.listSessions(filters(context.req.query()))
+    return context.json({
+      ...page,
+      items: page.items.map((session) => safeSession(session, context.get('privacy')))
+    })
+  })
   app.get('/api/sessions/:id', (context) => {
     const session = store.getSession(recordId(context.req.param('id')))
-    return session ? context.json(session) : context.json({ error: 'Session not found.' }, 404)
+    return session
+      ? context.json(safeSession(session, context.get('privacy')))
+      : context.json({ error: 'Session not found.' }, 404)
   })
   app.get('/api/sessions/:id/events', (context) => {
     const id = recordId(context.req.param('id'))
@@ -231,39 +285,54 @@ export function createApp(root: string, webDir?: string): Hono {
     const query = context.req.query()
     for (const key of Object.keys(query))
       if (!['limit', 'offset'].includes(key)) throw new InputError(`Unknown event filter: ${key}`)
-    return context.json(
-      store.getEvents(
-        id,
-        integer(query.limit, 100, 1, 1000),
-        integer(query.offset, 0, 0, 1_000_000)
-      )
-    )
+    const limit = integer(query.limit, 100, 1, 500)
+    const offset = integer(query.offset, 0, 0, 1_000_000)
+    const { config, redact } = context.get('privacy')
+    const items: NormalizedEvent[] = []
+    let total = 0
+    for (let rawOffset = 0; ; rawOffset += 500) {
+      const page = store.getEvents(id, 500, rawOffset)
+      for (const event of page.items) {
+        const safe = redactEvent(event, config, redact)
+        if (!safe) continue
+        if (total >= offset && items.length < limit) items.push(safe)
+        total++
+      }
+      if (rawOffset + page.items.length >= page.total || !page.items.length) break
+    }
+    return context.json({ items, total, limit, offset })
   })
   app.get('/api/sessions/:id/diff', async (context) => {
     const session = store.getSession(recordId(context.req.param('id')))
     if (!session) return context.json({ error: 'Session not found.' }, 404)
     return context.json({
-      diff: await readDiff(store, session),
+      diff: String(context.get('privacy').redact(await readDiff(store, session))),
       fidelity: 'final',
-      files: session.files
+      files: safeSession(session, context.get('privacy')).files
     })
   })
   app.get('/api/sessions/:id/findings', (context) => {
     const session = store.getSession(recordId(context.req.param('id')))
     return session
-      ? context.json(session.findings)
+      ? context.json(safeSession(session, context.get('privacy')).findings)
       : context.json({ error: 'Session not found.' }, 404)
   })
   app.get('/api/battles', (context) => {
     const page = store.listBattles(filters(context.req.query()))
-    return context.json({ ...page, items: page.items.map(battleSummary) })
+    return context.json({
+      ...page,
+      items: page.items.map((battle) => battleSummary(battle, context.get('privacy')))
+    })
   })
   app.get('/api/battles/:id', (context) => {
     const battle = store.getBattle(recordId(context.req.param('id')))
     return battle
       ? context.json({
-          ...battle,
-          sessions: battle.sessionIds.map((id) => store.getSession(id)).filter(Boolean)
+          ...safeBattle(battle, context.get('privacy')),
+          sessions: battle.sessionIds.flatMap((id) => {
+            const session = store.getSession(id)
+            return session ? [safeSession(session, context.get('privacy'))] : []
+          })
         })
       : context.json({ error: 'Battle not found.' }, 404)
   })
@@ -286,7 +355,8 @@ export function createApp(root: string, webDir?: string): Hono {
         runs: sessions.filter((session) => session.agentId === agentId).length
       })
     )
-    const costs = sessions.filter((session) => session.usage.costUsd !== undefined)
+    const costs = sessions.filter((session) => Number.isFinite(session.usage.costUsd))
+    const costTypes = new Set(costs.map((session) => session.usage.costType ?? 'unknown'))
     return context.json({
       totalSessions: sessions.length,
       successfulSessions: sessions.filter(
@@ -304,17 +374,18 @@ export function createApp(root: string, webDir?: string): Hono {
       totalCostUsd: totals(sessions, 'costUsd'),
       tokensAvailableRuns: sessions.filter((s) => s.usage.totalTokens !== undefined).length,
       costAvailableRuns: costs.length,
-      costType: costs.some((s) => s.usage.costType === 'estimated')
-        ? 'estimated'
-        : costs.length
-          ? 'provider_reported'
-          : 'unknown',
+      costType: costTypes.size > 1 ? 'mixed' : ([...costTypes][0] ?? 'unknown'),
       agentUsage: usageByAgent,
-      recentSessions: sessions.slice(0, 6),
+      recentSessions: sessions
+        .slice(0, 6)
+        .map((session) => safeSession(session, context.get('privacy'))),
       recentFailures: sessions
         .filter((s) => s.status === 'failed' || s.status === 'aborted')
-        .slice(0, 5),
-      recentBattles: store.listBattles({ ...filter, limit: 4, offset: 0 }).items.map(battleSummary)
+        .slice(0, 5)
+        .map((session) => safeSession(session, context.get('privacy'))),
+      recentBattles: store
+        .listBattles({ ...filter, limit: 4, offset: 0 })
+        .items.map((battle) => battleSummary(battle, context.get('privacy')))
     })
   })
   app.get('/api/export/:id', async (context) => {
@@ -395,7 +466,7 @@ export async function startServer(
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new InputError('Port must be an integer between 0 and 65535.')
   const app = createApp(root, options.webDir)
-  const disposable = app as Hono & { dispose: () => void }
+  const disposable = app as typeof app & { dispose: () => void }
   const server = await new Promise<ReturnType<typeof serve>>((resolveServer, reject) => {
     const instance = serve({ fetch: app.fetch, hostname: '127.0.0.1', port }, () =>
       resolveServer(instance)
@@ -408,10 +479,11 @@ export async function startServer(
   const address = server.address()
   if (!address || typeof address === 'string')
     throw new Error('Unable to resolve local server address.')
+  let closing: Promise<void> | undefined
   return {
     url: `http://127.0.0.1:${address.port}`,
-    close: () =>
-      new Promise<void>((resolveClose, reject) => {
+    close: () => {
+      closing ??= new Promise<void>((resolveClose, reject) => {
         server.close((error) => {
           disposable.dispose()
           if (error) reject(error)
@@ -419,5 +491,7 @@ export async function startServer(
         })
         if ('closeAllConnections' in server) server.closeAllConnections()
       })
+      return closing
+    }
   }
 }

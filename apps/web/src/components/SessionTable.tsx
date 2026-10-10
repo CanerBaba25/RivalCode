@@ -1,4 +1,14 @@
-import { Link, Agent, Status, Score, duration, number, cost, date } from '../lib/common.js'
+import {
+  Link,
+  Agent,
+  Status,
+  Score,
+  duration,
+  number,
+  cost,
+  costProvenance,
+  date
+} from '../lib/common.js'
 import type { Session } from '@rivalcode/shared'
 
 export function SessionTable({
@@ -88,13 +98,7 @@ export function SessionTable({
               <td className="mono">{number(session.usage.totalTokens)}</td>
               <td
                 className="mono"
-                title={
-                  session.usage.costType === 'estimated'
-                    ? 'Estimated API-equivalent cost'
-                    : session.usage.costType === 'provider_reported'
-                      ? 'Provider-reported cost'
-                      : 'Cost unavailable'
-                }
+                title={costProvenance(session.usage.costType, session.usage.costUsd)}
               >
                 {cost(session.usage.costUsd, session.usage.costType)}
               </td>

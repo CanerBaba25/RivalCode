@@ -42,34 +42,49 @@ const secretValues = new Set()
 for (const [key, value] of Object.entries(process.env)) {
   if (
     value &&
-    value.length >= 4 &&
-    /key|token|secret|password|credential|authorization|cookie/i.test(key)
+    /key|token|secret|password|passwd|credential|authorization|cookie|database_url|db_url|connection_string|dsn/i.test(
+      key
+    )
   )
     secretValues.add(value)
 }
-try {
-  for (const name of readdirSync(process.cwd()).filter((name) =>
-    /^\.env(?:\.[\w.-]+)?$/.test(name)
-  )) {
-    const file = resolve(process.cwd(), name)
-    const bytes = readBoundedFile(file, 1048576)
-    if (!bytes) continue
-    const source = bytes.toString('utf8')
-    for (const line of source.split(/\r?\n/)) {
-      const match = line.match(/^\s*(?:export\s+)?[\w]+\s*=\s*(.*?)\s*$/)
-      if (!match) continue
-      let value = match[1]
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      )
-        value = value.slice(1, -1)
-      else value = value.replace(/\s+#.*$/, '')
-      if (value.length >= 3) secretValues.add(value)
+const redactionRoots = new Set(
+  [process.cwd(), process.env.RIVALCODE_REDACTION_ROOT].filter(Boolean)
+)
+for (const root of redactionRoots) {
+  try {
+    for (const name of readdirSync(root).filter((name) => /^\.env(?:\..*)?$/.test(name))) {
+      try {
+        const bytes = readBoundedFile(resolve(root, name), 1048576)
+        if (!bytes) continue
+        for (const line of bytes.toString('utf8').split(/\r?\n/)) {
+          const match = line.match(/^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.*)$/)
+          if (!match) continue
+          let value = match[1].trim()
+          if (value.startsWith('"')) {
+            const end = value.lastIndexOf('"')
+            value =
+              end > 0
+                ? value
+                    .slice(1, end)
+                    .replace(/\\n/g, '\n')
+                    .replace(/\\r/g, '\r')
+                    .replace(/\\"/g, '"')
+                    .replace(/\\\\/g, '\\')
+                : value.slice(1)
+          } else if (value.startsWith("'")) {
+            const end = value.lastIndexOf("'")
+            value = end > 0 ? value.slice(1, end) : value.slice(1)
+          } else value = value.replace(/\s+#.*$/, '').trim()
+          if (value) secretValues.add(value)
+        }
+      } catch {
+        /* One unavailable dotenv file does not prevent inspecting the others. */
+      }
     }
+  } catch {
+    /* Missing or unreadable dotenv roots never change agent decisions. */
   }
-} catch {
-  /* Missing or unreadable .env files never change agent decisions. */
 }
 let custom = []
 try {
@@ -85,15 +100,24 @@ const secretPatterns = [
   /\bAIza[A-Za-z0-9_-]{20,}\b/g,
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
   /\bBearer\s+[^\s,;"']+/gi,
-  /\b(?:authorization|cookie|set-cookie)\s*[:=]\s*[^\r\n]+/gi,
-  /\b(?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*["']?[^\s,;"']+/gi
+  /\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*[^\r\n]+/gi,
+  /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret)\s*[:=]\s*["']?[^\s,;"']+/gi,
+  /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----/g,
+  /(?:https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi
 ]
+function outsideMarkers(value, transform) {
+  return value
+    .split(/(\[REDACTED\])/g)
+    .map((part) => (part === '[REDACTED]' ? part : transform(part)))
+    .join('')
+}
 function redact(value) {
   if (typeof value !== 'string') return value
   let result = value
-  for (const secret of secretValues) result = result.split(secret).join('[REDACTED]')
+  for (const secret of [...secretValues].sort((left, right) => right.length - left.length))
+    result = outsideMarkers(result, (text) => text.split(secret).join('[REDACTED]'))
   for (const pattern of [...secretPatterns, ...custom])
-    result = result.replace(pattern, '[REDACTED]')
+    result = outsideMarkers(result, (text) => text.replace(pattern, '[REDACTED]'))
   return result
 }
 let sequence = 0
@@ -124,12 +148,16 @@ function observe(type, payload, nativeId) {
       if (key === 'failed' && typeof value === 'boolean') safe[key] = value
       if (key === 'exitCode' && typeof value === 'number') safe[key] = value
     }
+    const identifier = redact(nativeId || 'observer-' + CAPTURE_SESSION + '-' + ++sequence)
     const record = {
       rivalcode: 1,
       source: 'hook',
       type,
       timestamp: new Date().toISOString(),
-      nativeId: redact(nativeId || 'observer-' + CAPTURE_SESSION + '-' + ++sequence),
+      nativeId:
+        Buffer.byteLength(identifier) > 512
+          ? 'sha256:' + createHash('sha256').update(identifier).digest('hex')
+          : identifier,
       payload: safe
     }
     let output = JSON.stringify(record) + '\n'

@@ -19,7 +19,9 @@ export function runProcess(
 
   if (
     options.timeoutMs !== undefined &&
-    (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)
+    (!Number.isFinite(options.timeoutMs) ||
+      options.timeoutMs <= 0 ||
+      options.timeoutMs > 2147483647)
   )
     return Promise.reject(new Error('Invalid process timeout'))
 
@@ -140,6 +142,8 @@ export function runProcess(
 
     child.on('close', (exitCode, signal) => {
       if (timeout) clearTimeout(timeout)
+      // The leader can exit before descendants that ignored the first group signal.
+      if (stopping && process.platform !== 'win32') terminate(true)
       if (escalation) clearTimeout(escalation)
       options.signal?.removeEventListener('abort', abort)
 

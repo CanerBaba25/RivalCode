@@ -39,7 +39,15 @@ export function useFilters() {
     setOffset(0)
   }
   const params = new URLSearchParams()
-  for (const [key, value] of Object.entries(values)) if (value) params.set(key, value)
+  for (const [key, value] of Object.entries(values)) {
+    if (!value) continue
+    // Date inputs describe the same local calendar days shown in the session table.
+    const bound = key === 'to' ? '23:59:59.999' : '00:00:00.000'
+    params.set(
+      key,
+      key === 'from' || key === 'to' ? new Date(`${value}T${bound}`).toISOString() : value
+    )
+  }
   params.set('limit', '30')
   params.set('offset', String(offset))
   params.set('sort', sort.field)

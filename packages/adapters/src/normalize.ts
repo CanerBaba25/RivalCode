@@ -17,6 +17,17 @@ export function number(value: unknown): number | undefined {
 export function fields(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined))
 }
+export function toolInput(input: unknown): Record<string, unknown> {
+  const args = object(input)
+
+  return fields({
+    command: text(args.command),
+    cmd: text(args.cmd),
+    file_path: text(args.file_path),
+    filePath: text(args.filePath),
+    path: text(args.path)
+  })
+}
 export function timestamp(value: unknown): string | undefined {
   if (typeof value !== 'string' && typeof value !== 'number') return undefined
   const time = new Date(value)

@@ -71,7 +71,9 @@ export function useApi<T>(path: string | null): {
     setLoading(true)
     setError(null)
     void request<T>(path, controller.signal)
-      .then(setData)
+      .then((result) => {
+        if (!controller.signal.aborted) setData(result)
+      })
       .catch((caught: unknown) => {
         if (!controller.signal.aborted)
           setError(caught instanceof Error ? caught.message : 'Could not read local data.')
@@ -98,7 +100,20 @@ export function number(value: number | null | undefined): string {
 export function cost(value: number | null | undefined, type?: string): string {
   return value === null || value === undefined
     ? 'N/A'
-    : `$${value.toFixed(3)}${type === 'estimated' || type === 'mixed' ? '*' : ''}`
+    : `$${value.toFixed(3)}${type === 'estimated' ? '*' : ''}`
+}
+export function modelLabel(model?: string, source?: 'configured' | 'native'): string {
+  if (!model) return 'Model unavailable'
+  if (source === 'configured') return `Requested model: ${model}`
+  if (source === 'native') return `Native model: ${model}`
+  return `Model: ${model} · source unavailable`
+}
+export function costProvenance(type?: string, value?: number | null): string {
+  if (value === null || value === undefined) return 'Cost unavailable'
+  if (type === 'estimated') return 'API-equivalent estimate*'
+  if (type === 'provider_reported') return 'Provider reported'
+  if (type === 'mixed') return 'Mixed cost provenance'
+  return 'Cost provenance unavailable'
 }
 export function date(value: string): string {
   return new Date(value).toLocaleString(undefined, {
