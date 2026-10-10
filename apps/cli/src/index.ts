@@ -11,6 +11,7 @@ import {
   runProcess,
   detectProject,
   createRedactor,
+  normalizeDateBound,
   defaultConfig
 } from '@rivalcode/runtime'
 import { detectAdapters, getAdapter, uninstallHooks } from '@rivalcode/adapters'
@@ -69,6 +70,15 @@ const agentId = (value: string): AgentId => {
     throw new InvalidArgumentError(`Unknown agent: ${value}`)
   return value as AgentId
 }
+
+function dateBound(value: string, endOfDay = false): string {
+  try {
+    return normalizeDateBound(value, endOfDay)
+  } catch (error) {
+    throw new InvalidArgumentError(error instanceof Error ? error.message : String(error))
+  }
+}
+
 const abortable = async <T>(work: (signal: AbortSignal) => Promise<T>) => {
   const controller = new AbortController()
   const cancel = () => controller.abort()
@@ -294,12 +304,15 @@ program
   .description('List persisted sessions')
   .option('--agent <id>', 'agent filter')
   .option('--status <status>', 'status filter')
-  .option('--from <date>', 'start date')
-  .option('--to <date>', 'end date')
+  .option('--from <date>', 'start date', (value) => dateBound(value))
+  .option('--to <date>', 'end date', (value) => dateBound(value, true))
   .option('--incomplete', 'show interrupted or active runs')
   .option('--limit <count>', 'page size', positive, 50)
   .option('--json', 'machine-readable page')
   .action(async (options) => {
+    if (options.from && options.to && options.from > options.to)
+      throw new Error('Start date must precede end date.')
+
     const repo = await root()
     const config = await loadConfig(repo)
     const redact = await createRedactor(repo, config)

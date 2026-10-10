@@ -123,7 +123,18 @@ const payloadFields: Record<EventType, string[]> = {
     'costUsd',
     'costType'
   ],
-  cost: ['costUsd', 'costType', 'semantics', 'source', 'provenance', 'model', 'modelSource'],
+  cost: [
+    'costUsd',
+    'costType',
+    'semantics',
+    'scope',
+    'source',
+    'provenance',
+    'model',
+    'modelSource',
+    'modelScope',
+    'tokenScope'
+  ],
   error: [
     'message',
     'error',

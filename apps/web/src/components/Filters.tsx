@@ -1,5 +1,5 @@
 import { useApi, names } from '../lib/common.js'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { RepositoryRecord } from '@rivalcode/shared'
 
 export type FilterValues = {
@@ -228,11 +228,20 @@ export function Pagination({
   offset: number
   onChange: (offset: number) => void
 }) {
+  const lastOffset = page.total > 0 ? Math.floor((page.total - 1) / page.limit) * page.limit : 0
+
+  useEffect(() => {
+    // Live updates can remove the last page from an active status filter.
+    if (offset > lastOffset) onChange(lastOffset)
+  }, [offset, lastOffset, onChange])
+
   return (
     <div className="pagination">
-      <span>
+      <span aria-live="polite">
         {page.total
-          ? `${offset + 1}–${Math.min(offset + page.limit, page.total)} of ${page.total}`
+          ? offset > lastOffset
+            ? 'Updating page…'
+            : `${offset + 1}–${Math.min(offset + page.limit, page.total)} of ${page.total}`
           : '0 records'}
       </span>
       <div>

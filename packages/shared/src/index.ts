@@ -231,7 +231,7 @@ export interface LeaderboardRow {
   successes: number
   successRate: number
   averageScore: number | null
-  averageDurationMs: number
+  averageDurationMs: number | null
   inputTokens: number | null
   outputTokens: number | null
   totalTokens: number | null

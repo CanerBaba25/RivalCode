@@ -1,5 +1,5 @@
 import { Icon, State, Empty, request, duration, Revision } from '../lib/common.js'
-import { useContext, useState, useEffect, useMemo, useRef } from 'react'
+import { useContext, useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { Session, NormalizedEvent, Page } from '@rivalcode/shared'
 
 function eventOutcome(event: NormalizedEvent): 'failed' | 'passed' | '' {
@@ -123,6 +123,11 @@ export function Timeline({
   const [speed, setSpeed] = useState(1)
   const [limit, setLimit] = useState(500)
   const consumedFocus = useRef<string[] | undefined>(undefined)
+  const replaySelection = useRef<{ id?: string; type: string; source: string }>({
+    type: 'all',
+    source: 'all'
+  })
+
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true)
@@ -140,8 +145,19 @@ export function Timeline({
         if (result.length >= page.total || page.items.length === 0) break
       }
       if (!controller.signal.aborted) {
+        const selection = replaySelection.current
+        const index = result
+          .filter(
+            (event) =>
+              (selection.type === 'all' || event.type === selection.type) &&
+              (selection.source === 'all' || event.source === selection.source)
+          )
+          .findIndex((event) => event.id === selection.id)
+
+        // Native history can arrive late; preserve the inspected event rather than its old index.
         setEvents(result)
         setTotal(expected)
+        if (index >= 0) setCursor(index)
       }
     }
     void load()
@@ -195,6 +211,13 @@ export function Timeline({
     return () => clearTimeout(timeout)
   }, [playing, cursor, speed, filtered])
   const selected = filtered[cursor]
+
+  useLayoutEffect(() => {
+    replaySelection.current = { id: selected?.id, type, source }
+  }, [selected?.id, type, source])
+
+  const types = [...new Set(events.map((event) => event.type))]
+  const sources = [...new Set(events.map((event) => event.source))]
   const move = (delta: number) => {
     setPlaying(false)
     setCursor((value) => Math.max(0, Math.min(filtered.length - 1, value + delta)))
@@ -256,7 +279,10 @@ export function Timeline({
             }}
           >
             <option value="all">All event types</option>
-            {[...new Set(events.map((event) => event.type))].map((value) => (
+            {type !== 'all' && !types.some((value) => value === type) && (
+              <option value={type}>{type.replaceAll('_', ' ')} (not in loaded events)</option>
+            )}
+            {types.map((value) => (
               <option value={value} key={value}>
                 {value.replaceAll('_', ' ')}
               </option>
@@ -275,7 +301,10 @@ export function Timeline({
             }}
           >
             <option value="all">All sources</option>
-            {[...new Set(events.map((event) => event.source))].map((value) => (
+            {source !== 'all' && !sources.some((value) => value === source) && (
+              <option value={source}>{source} (not in loaded events)</option>
+            )}
+            {sources.map((value) => (
               <option value={value} key={value}>
                 {value}
               </option>

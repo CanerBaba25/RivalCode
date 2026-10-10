@@ -44,6 +44,14 @@ import { rankBattle, scoreRun } from './scoring.js'
 import { redactSession, redactRepository, redactBattle } from './privacy.js'
 import { writeArtifact } from './artifacts.js'
 
+function boundedDiff(diff: string, limit: number): string {
+  const bytes = Buffer.from(diff)
+
+  return bytes.length > limit
+    ? bytes.subarray(0, limit).toString('utf8') + '\n[RivalCode diff truncated]\n'
+    : diff
+}
+
 function within(root: string, candidate: string) {
   const relative = path.relative(root, candidate)
 
@@ -477,14 +485,12 @@ async function executeRun(
     const git = await captureGit(cwd, baselineCommit, config.ignore)
     session.files = git.files
     const diff = String(redact(git.diff))
-    const bytes = Buffer.from(diff)
-    const bounded =
-      bytes.length > config.limits.maxArtifactBytes
-        ? bytes.subarray(0, config.limits.maxArtifactBytes).toString('utf8') +
-          '\n[RivalCode diff truncated]\n'
-        : diff
 
-    await writeArtifact(artifactDir, 'final.diff', bounded)
+    await writeArtifact(
+      artifactDir,
+      'final.diff',
+      boundedDiff(diff, config.limits.maxArtifactBytes)
+    )
 
     for (const file of session.files)
       emit({
@@ -566,7 +572,7 @@ async function executeRun(
       await writeArtifact(
         artifactDir,
         'final.diff',
-        Buffer.from(safe).subarray(0, config.limits.maxArtifactBytes)
+        boundedDiff(safe, config.limits.maxArtifactBytes)
       )
     } catch (captureFailure) {
       emit({
@@ -841,10 +847,11 @@ export async function cleanupRuns(rootInput: string) {
   const root = await gitRoot(rootInput)
   const redact = await createRedactor(root, await loadConfig(root))
   const store = new Store(root)
-  const recovered = store.recoverIncomplete()
   const removed: string[] = []
 
   try {
+    const recovered = store.recoverIncomplete()
+
     for (let offset = 0; ; offset += 500) {
       const page = store.listSessions({ limit: 500, offset })
 

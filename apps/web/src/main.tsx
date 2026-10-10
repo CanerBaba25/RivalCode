@@ -39,7 +39,15 @@ function App() {
     stream.onerror = () => setConnection('reconnecting')
     return () => stream.close()
   }, [])
-  const parts = path.split('/').filter(Boolean)
+  let parts: string[]
+
+  try {
+    // Decode each route segment once before encoding it for the local API.
+    parts = path.split('/').filter(Boolean).map(decodeURIComponent)
+  } catch {
+    parts = ['invalid']
+  }
+
   const section = parts[0] ?? 'overview'
   const id = parts[1]
   const nav = [

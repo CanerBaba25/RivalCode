@@ -22,5 +22,5 @@
     "scripts/**/*.ts",
     "*.config.ts"
   ],
-  "exclude": ["node_modules", "dist", "graphify-out", "tests/fixtures/demo-repo"]
+  "exclude": ["node_modules", "dist", "tests/fixtures/demo-repo"]
 }

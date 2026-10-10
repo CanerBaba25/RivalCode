@@ -47,7 +47,7 @@ pnpm build
 
 # Install the built CLI locally; no npm release is required.
 pnpm pack --pack-destination .rivalcode/packages
-npm install -g .rivalcode/packages/rivalcode-0.1.2.tgz
+npm install -g .rivalcode/packages/rivalcode-0.1.3.tgz
 ```
 
 Then, inside your project:

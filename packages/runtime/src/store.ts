@@ -172,14 +172,82 @@ const migrations = [
   }
 ]
 
+export function normalizeDateBound(value: string, endOfDay = false): string {
+  if (
+    !/^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/.test(
+      value
+    ) ||
+    !Number.isFinite(Date.parse(value))
+  )
+    throw new Error('Date filters must use ISO dates or timestamps with a timezone.')
+
+  const day = value.slice(0, 10)
+  if (new Date(`${day}T00:00:00.000Z`).toISOString().slice(0, 10) !== day)
+    throw new Error('Date filters must contain a valid calendar date.')
+
+  const normalized =
+    value.length === 10
+      ? `${day}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z`
+      : new Date(value).toISOString()
+
+  // Expanded signed years do not share the ordering of the supported stored ISO dates.
+  if (!/^\d{4}-/.test(normalized))
+    throw new Error('Date filters must resolve to a UTC year between 0000 and 9999.')
+
+  return normalized
+}
+
+function dateBounds(filter: Pick<SessionFilter, 'from' | 'to'>) {
+  const from = filter.from === undefined ? undefined : normalizeDateBound(filter.from)
+  const to = filter.to === undefined ? undefined : normalizeDateBound(filter.to, true)
+
+  if (from && to && from > to) throw new Error('Start date must precede end date.')
+
+  return { from, to }
+}
+
 function pageBounds(filter: Pick<SessionFilter, 'limit' | 'offset'>) {
   return {
     limit: Math.min(
       500,
       Math.max(1, Math.trunc(Number.isFinite(filter.limit) ? filter.limit! : 50))
     ),
-    offset: Math.max(0, Math.trunc(Number.isFinite(filter.offset) ? filter.offset! : 0))
+    offset: Math.min(
+      Number.MAX_SAFE_INTEGER,
+      Math.max(0, Math.trunc(Number.isFinite(filter.offset) ? filter.offset! : 0))
+    )
   }
+}
+
+function measurementSql(
+  column: string,
+  jsonPath: string,
+  whole = false,
+  maximum = Number.MAX_VALUE
+): string {
+  // Compare indexed fields with their typed document values: SQLite affinity alone
+  // converts numeric strings into plausible measurements from invalid archived records.
+  return `CASE WHEN
+    json_type(s.document, '${jsonPath}') IN ('integer','real')
+    AND typeof(${column}) IN ('integer','real')
+    AND ${column}=json_extract(s.document, '${jsonPath}')
+    AND ${column}>=0 AND ${column}<=${maximum}
+    ${whole ? `AND ${column}=CAST(${column} AS INTEGER)` : ''}
+    THEN CAST(${column} AS REAL) END`
+}
+
+function measurementResult(
+  value: unknown,
+  whole = false,
+  maximum = Number.MAX_VALUE
+): number | null {
+  return typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= maximum &&
+    (!whole || Number.isSafeInteger(value))
+    ? value
+    : null
 }
 
 function isLive(pid: number): boolean {
@@ -198,6 +266,7 @@ function decode<T>(row: Record<string, unknown> | undefined): T | undefined {
 }
 
 function sessionWhere(filter: SessionFilter): { clause: string; values: SQLInputValue[] } {
+  const { from, to } = dateBounds(filter)
   const clauses: string[] = []
   const values: SQLInputValue[] = []
   const add = (sql: string, value: SQLInputValue) => {
@@ -212,8 +281,8 @@ function sessionWhere(filter: SessionFilter): { clause: string; values: SQLInput
   }
 
   if (filter.status) add('s.status=?', filter.status)
-  if (filter.from) add('s.started_at>=?', filter.from)
-  if (filter.to) add('s.started_at<=?', filter.to)
+  if (from) add('s.started_at>=?', from)
+  if (to) add('s.started_at<=?', to)
   if (filter.minScore !== undefined) add('s.score>=?', filter.minScore)
   if (filter.maxScore !== undefined) add('s.score<=?', filter.maxScore)
 
@@ -486,10 +555,15 @@ export class Store {
     const { limit, offset } = pageBounds(filter)
     const sorts: Record<string, string> = {
       startedAt: 's.started_at',
-      durationMs: 's.duration_ms',
-      score: 's.score',
-      tokens: 'u.total_tokens',
-      cost: 'u.cost_usd',
+      durationMs: measurementSql('s.duration_ms', '$.durationMs', true, Number.MAX_SAFE_INTEGER),
+      score: measurementSql('s.score', '$.score.total', false, 100),
+      tokens: measurementSql(
+        'u.total_tokens',
+        '$.usage.totalTokens',
+        true,
+        Number.MAX_SAFE_INTEGER
+      ),
+      cost: measurementSql('u.cost_usd', '$.usage.costUsd'),
       files: "json_array_length(s.document,'$.files')",
       agentId: 's.agent_id',
       repositoryName: 'r.name',
@@ -497,7 +571,8 @@ export class Store {
     }
 
     const order = filter.order === 'asc' ? 'ASC' : 'DESC'
-    const sort = sorts[filter.sort ?? 'startedAt'] ?? sorts.startedAt!
+    const sortKey = filter.sort ?? 'startedAt'
+    const sort = Object.hasOwn(sorts, sortKey) ? sorts[sortKey]! : sorts.startedAt!
     const from =
       ' FROM sessions s JOIN repositories r ON r.id=s.repository_id LEFT JOIN usage u ON u.session_id=s.id'
 
@@ -507,7 +582,7 @@ export class Store {
 
     const rows = this.db
       .prepare(
-        `SELECT s.document${from}${clause} ORDER BY ${sort} ${order},s.id ${order} LIMIT ? OFFSET ?`
+        `SELECT s.document${from}${clause} ORDER BY (${sort} IS NULL) ASC,${sort} ${order},s.id ${order} LIMIT ? OFFSET ?`
       )
       .all(...values, limit, offset)
 
@@ -604,6 +679,7 @@ export class Store {
   }
 
   listBattles(filter: SessionFilter = {}): Page<Battle> {
+    const { from: fromDate, to } = dateBounds(filter)
     const { limit, offset } = pageBounds(filter)
     const conditions: string[] = []
     const values: SQLInputValue[] = []
@@ -618,14 +694,14 @@ export class Store {
       values.push(filter.status)
     }
 
-    if (filter.from) {
+    if (fromDate) {
       conditions.push('b.started_at>=?')
-      values.push(filter.from)
+      values.push(fromDate)
     }
 
-    if (filter.to) {
+    if (to) {
       conditions.push('b.started_at<=?')
-      values.push(filter.to)
+      values.push(to)
     }
 
     if (filter.projectType) {
@@ -673,6 +749,30 @@ export class Store {
 
   leaderboard(filter: SessionFilter = {}): LeaderboardRow[] {
     const { clause, values } = sessionWhere({ ...filter, demo: filter.demo ?? false })
+    const input = measurementSql(
+      'u.input_tokens',
+      '$.usage.inputTokens',
+      true,
+      Number.MAX_SAFE_INTEGER
+    )
+    const output = measurementSql(
+      'u.output_tokens',
+      '$.usage.outputTokens',
+      true,
+      Number.MAX_SAFE_INTEGER
+    )
+    const tokens = measurementSql(
+      'u.total_tokens',
+      '$.usage.totalTokens',
+      true,
+      Number.MAX_SAFE_INTEGER
+    )
+    const duration = measurementSql('s.duration_ms', '$.durationMs', true, Number.MAX_SAFE_INTEGER)
+    const score = measurementSql('s.score', '$.score.total', false, 100)
+    const cost = measurementSql('u.cost_usd', '$.usage.costUsd')
+    const costType = `CASE WHEN u.cost_type IN ('provider_reported','estimated')
+      AND u.cost_type=json_extract(s.document, '$.usage.costType')
+      THEN u.cost_type ELSE 'unknown' END`
 
     return this.db
       .prepare(
@@ -684,19 +784,19 @@ export class Store {
                AND COALESCE(json_extract(s.document,'$.score.requiredPassed'),1)=1 THEN 1
              ELSE 0
            END) AS successes,
-           AVG(s.score) AS averageScore,
-           AVG(s.duration_ms) AS averageDurationMs,
-           SUM(u.input_tokens) AS inputTokens,
-           SUM(u.output_tokens) AS outputTokens,
-           SUM(u.total_tokens) AS totalTokens,
-           AVG(u.cost_usd) AS averageCostUsd,
+           AVG(${score}) AS averageScore,
+           AVG(${duration}) AS averageDurationMs,
+           SUM(${input}) AS inputTokens,
+           SUM(${output}) AS outputTokens,
+           SUM(${tokens}) AS totalTokens,
+           AVG(${cost}) AS averageCostUsd,
            CASE
-             WHEN COUNT(u.cost_usd)=0 THEN 'unknown'
+             WHEN COUNT(${cost})=0 THEN 'unknown'
              WHEN COUNT(DISTINCT CASE
-               WHEN u.cost_usd IS NOT NULL THEN COALESCE(u.cost_type,'unknown')
+               WHEN (${cost}) IS NOT NULL THEN ${costType}
              END)>1 THEN 'mixed'
              ELSE COALESCE(MAX(CASE
-               WHEN u.cost_usd IS NOT NULL THEN u.cost_type
+               WHEN (${cost}) IS NOT NULL THEN ${costType}
              END),'unknown')
            END AS costType
          FROM sessions s
@@ -711,13 +811,13 @@ export class Store {
         runs: Number(row.runs),
         successes: Number(row.successes),
         successRate: Number(row.successes) / Number(row.runs),
-        averageScore: row.averageScore === null ? null : Number(row.averageScore),
-        averageDurationMs: Number(row.averageDurationMs),
-        inputTokens: row.inputTokens === null ? null : Number(row.inputTokens),
-        outputTokens: row.outputTokens === null ? null : Number(row.outputTokens),
-        totalTokens: row.totalTokens === null ? null : Number(row.totalTokens),
-        averageCostUsd: row.averageCostUsd === null ? null : Number(row.averageCostUsd),
-        costType: String(row.costType)
+        averageScore: measurementResult(row.averageScore, false, 100),
+        averageDurationMs: measurementResult(row.averageDurationMs, false, Number.MAX_SAFE_INTEGER),
+        inputTokens: measurementResult(row.inputTokens, true, Number.MAX_SAFE_INTEGER),
+        outputTokens: measurementResult(row.outputTokens, true, Number.MAX_SAFE_INTEGER),
+        totalTokens: measurementResult(row.totalTokens, true, Number.MAX_SAFE_INTEGER),
+        averageCostUsd: measurementResult(row.averageCostUsd),
+        costType: measurementResult(row.averageCostUsd) === null ? 'unknown' : String(row.costType)
       }))
   }
 

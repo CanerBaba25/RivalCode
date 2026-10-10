@@ -2,10 +2,17 @@ import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { serve } from '@hono/node-server'
 import { serveStatic } from '@hono/node-server/serve-static'
+import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { lstat, open, readFile, realpath, stat } from 'node:fs/promises'
+import { lstat, open, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { resolve, relative, isAbsolute, join } from 'node:path'
-import { Store, createRedactor, defaultConfig, loadConfig } from '@rivalcode/runtime'
+import {
+  Store,
+  createRedactor,
+  defaultConfig,
+  loadConfig,
+  normalizeDateBound
+} from '@rivalcode/runtime'
 import { detectAdapters } from '@rivalcode/adapters'
 import { RIVALCODE_VERSION } from '@rivalcode/shared'
 import {
@@ -89,22 +96,11 @@ function filters(query: Record<string, string>): SessionFilter {
       if (key === 'status' && !statuses.has(value)) throw new InputError('Unknown status.')
       Object.assign(filter, { [key]: value })
     } else if (key === 'from' || key === 'to') {
-      if (
-        !/^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/.test(
-          value
-        ) ||
-        !Number.isFinite(Date.parse(value))
-      )
-        throw new InputError('Date filters must use ISO dates or timestamps with a timezone.')
-      const day = value.slice(0, 10)
-      if (new Date(`${day}T00:00:00.000Z`).toISOString().slice(0, 10) !== day)
-        throw new InputError('Date filters must contain a valid calendar date.')
-      Object.assign(filter, {
-        [key]:
-          value.length === 10
-            ? `${value}T${key === 'to' ? '23:59:59.999' : '00:00:00.000'}Z`
-            : new Date(value).toISOString()
-      })
+      try {
+        Object.assign(filter, { [key]: normalizeDateBound(value, key === 'to') })
+      } catch (error) {
+        throw new InputError(error instanceof Error ? error.message : String(error))
+      }
     } else if (key === 'minScore' || key === 'maxScore') {
       const score = Number(value)
       if (value === '' || !Number.isFinite(score) || score < 0 || score > 100)
@@ -241,14 +237,27 @@ function totals(sessions: Session[], key: 'totalTokens' | 'costUsd'): number | n
 
   return total
 }
-async function revision(store: Store): Promise<string> {
+async function revision(store: Store, root: string): Promise<string> {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
+  const dotenvFiles = entries
+    .filter(
+      (entry) => (entry.isFile() || entry.isSymbolicLink()) && /^\.env(?:\..*)?$/.test(entry.name)
+    )
+    .map((entry) => join(root, entry.name))
+    .sort()
+
   const files = await Promise.all(
-    [store.dbPath, `${store.dbPath}-wal`].map(async (path) => {
-      const metadata = await stat(path).catch(() => null)
-      return metadata ? `${metadata.mtimeMs}:${metadata.size}` : 'absent'
-    })
+    [store.dbPath, `${store.dbPath}-wal`, join(root, 'rivalcode.config.json'), ...dotenvFiles].map(
+      async (file) => {
+        const metadata = await stat(file, { bigint: true }).catch(() => null)
+        return metadata
+          ? `${file}:${metadata.dev}:${metadata.ino}:${metadata.mtimeNs}:${metadata.ctimeNs}:${metadata.size}`
+          : `${file}:absent`
+      }
+    )
   )
-  return files.join('|')
+
+  return createHash('sha256').update(files.join('|')).digest('hex')
 }
 
 /** Read-only localhost API. The CLI owns writes; SSE observes persisted changes across processes. */
@@ -455,6 +464,10 @@ export function createApp(root: string, webDir?: string): Hono<PrivacyEnv> {
     )
     const costs = sessions.filter((session) => usageValue(session, 'costUsd') !== undefined)
     const costTypes = new Set(costs.map((session) => costType(session.usage.costType)))
+    const durations = sessions
+      .map((session) => session.durationMs)
+      .filter((duration) => Number.isSafeInteger(duration) && duration >= 0)
+
     return context.json({
       totalSessions: sessions.length,
       successfulSessions: sessions.filter(
@@ -465,8 +478,8 @@ export function createApp(root: string, webDir?: string): Hono<PrivacyEnv> {
       activeSessions: sessions.filter((s) =>
         ['preparing', 'running', 'verifying'].includes(s.status)
       ).length,
-      averageDurationMs: sessions.length
-        ? sessions.reduce((sum, s) => sum + s.durationMs, 0) / sessions.length
+      averageDurationMs: durations.length
+        ? durations.reduce((sum, duration) => sum + duration, 0) / durations.length
         : null,
       totalTokens: totals(sessions, 'totalTokens'),
       totalCostUsd: totals(sessions, 'costUsd'),
@@ -508,7 +521,7 @@ export function createApp(root: string, webDir?: string): Hono<PrivacyEnv> {
   app.get('/api/stream', (context) =>
     streamSSE(context, async (stream) => {
       let running = true
-      let previous = await revision(store)
+      let previous = await revision(store, root)
       stream.onAbort(() => {
         running = false
       })
@@ -517,7 +530,7 @@ export function createApp(root: string, webDir?: string): Hono<PrivacyEnv> {
       while (running) {
         await stream.sleep(1000)
         if (!running) break
-        const current = await revision(store)
+        const current = await revision(store, root)
         if (current !== previous) {
           previous = current
           await stream.writeSSE({ event: 'update', data: JSON.stringify({ revision: current }) })
