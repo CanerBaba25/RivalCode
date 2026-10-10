@@ -85,7 +85,13 @@ abstract class NativeAdapter implements AgentAdapter {
     const events = captureEvent(record) ?? this.parseNative(record)
     return events.filter((item) => {
       if (item.nativeId === undefined) return true
-      const key = `${item.type}:${toolKey(item.nativeId)}`
+
+      // A repeated completion can lose cached tool metadata; shell and generic tool phases
+      // still identify the same native call rather than two independent observations.
+      const phase = item.type.startsWith('command_')
+        ? item.type.replace('command_', 'tool_')
+        : item.type
+      const key = `${phase}:${toolKey(item.nativeId)}`
       if (this.captured.has(key)) return false
       this.captured.add(key)
       // Cap state for extremely long sessions. Session event persistence remains bounded separately.
@@ -231,7 +237,17 @@ export class CodexAdapter extends NativeAdapter {
         )
       ]
     }
-    if (item.type === 'file_change' && type === 'item.completed')
+    if (item.type === 'file_change' && type === 'item.completed') {
+      if (item.status === 'failed')
+        return [
+          event(
+            'error',
+            { message: 'Codex patch application failed', toolId: id },
+            raw,
+            id ? `${id}:failed` : undefined
+          )
+        ]
+
       return list(item.changes).flatMap((change, index) => {
         const value = object(change)
         const path = text(value.path)
@@ -246,6 +262,7 @@ export class CodexAdapter extends NativeAdapter {
             ]
           : []
       })
+    }
     if (item.type === 'web_search' && (type === 'item.started' || type === 'item.completed'))
       return [
         event(

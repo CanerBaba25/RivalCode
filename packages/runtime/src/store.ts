@@ -142,6 +142,33 @@ const migrations = [
       CREATE INDEX battles_repository_started ON battles(repository_id, started_at DESC);
       CREATE INDEX battle_sessions_session ON battle_sessions(session_id);
 `
+  },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE file_changes_v2 (
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        change_index INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        old_path TEXT,
+        status TEXT NOT NULL,
+        additions INTEGER NOT NULL,
+        deletions INTEGER NOT NULL,
+        binary INTEGER NOT NULL,
+        document TEXT NOT NULL,
+        PRIMARY KEY(session_id, change_index)
+      );
+
+      INSERT INTO file_changes_v2
+        SELECT session_id,
+          ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY path) - 1,
+          path, old_path, status, additions, deletions, binary, document
+        FROM file_changes;
+
+      DROP TABLE file_changes;
+      ALTER TABLE file_changes_v2 RENAME TO file_changes;
+      CREATE INDEX file_changes_session_path ON file_changes(session_id, path);
+`
   }
 ]
 
@@ -384,11 +411,13 @@ export class Store {
       for (const table of ['file_changes', 'verification_runs', 'findings'])
         this.db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(session.id)
 
-      const insertFile = this.db.prepare('INSERT INTO file_changes VALUES (?,?,?,?,?,?,?,?)')
+      const insertFile = this.db.prepare('INSERT INTO file_changes VALUES (?,?,?,?,?,?,?,?,?)')
 
-      for (const file of session.files)
+      // Redaction can make distinct filenames identical; sequence preserves every observation.
+      for (const [index, file] of session.files.entries())
         insertFile.run(
           session.id,
+          index,
           file.path,
           file.oldPath ?? null,
           file.status,

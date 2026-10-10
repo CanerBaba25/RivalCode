@@ -34,11 +34,20 @@ export function redactSession(session: Session, redact: Redactor, config?: Rival
     finishedAt: session.finishedAt,
     status: session.status,
     battleId: session.battleId,
-    modelSource: session.modelSource,
+    modelSource: ['configured', 'native'].includes(session.modelSource ?? '')
+      ? session.modelSource
+      : undefined,
     usage: {
       ...safe.usage,
-      costType: session.usage.costType,
-      modelSource: session.usage.modelSource,
+      costType:
+        session.usage.costType === undefined
+          ? undefined
+          : ['provider_reported', 'estimated', 'unknown'].includes(session.usage.costType)
+            ? session.usage.costType
+            : 'unknown',
+      modelSource: ['configured', 'native'].includes(session.usage.modelSource ?? '')
+        ? session.usage.modelSource
+        : undefined,
       modelScope: ['single', 'mixed', 'unknown'].includes(session.usage.modelScope ?? '')
         ? session.usage.modelScope
         : undefined,

@@ -47,7 +47,7 @@ pnpm build
 
 # Install the built CLI locally; no npm release is required.
 pnpm pack --pack-destination .rivalcode/packages
-npm install -g .rivalcode/packages/rivalcode-0.1.1.tgz
+npm install -g .rivalcode/packages/rivalcode-0.1.2.tgz
 ```
 
 Then, inside your project:
@@ -119,6 +119,10 @@ observations are labeled according to what was actually captured.
 The bundled API and dashboard start together. Live updates observe the persistent
 database, including runs from a separate CLI process. There are no fake production
 responses or sample sessions inserted on startup.
+
+Use the arrow keys or Home/End to move between session tabs. Replay links open the
+matching saved file, and diff filters remain available for binary or metadata-only
+changes. Session details and exports label partial token accounting explicitly.
 
 Comparison selections survive filters, pages, **Change selection** and reloads in
 the same browser tab when tab storage is available. **Copy comparison link** copies

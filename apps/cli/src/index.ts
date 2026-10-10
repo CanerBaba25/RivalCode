@@ -16,7 +16,7 @@ import {
 import { detectAdapters, getAdapter, uninstallHooks } from '@rivalcode/adapters'
 import { runAgent, runBattle, cleanupRuns, exportRecord, redactSession } from '@rivalcode/core'
 import { startServer } from '@rivalcode/server'
-import type { AgentId } from '@rivalcode/shared'
+import { RIVALCODE_VERSION, type AgentId } from '@rivalcode/shared'
 
 const program = new Command()
 program.exitOverride().configureOutput({
@@ -28,7 +28,7 @@ program.exitOverride().configureOutput({
 program
   .name('rivalcode')
   .description('Benchmark coding agents on your repository. Same task. Real evidence.')
-  .version('0.1.1')
+  .version(RIVALCODE_VERSION)
   .option('--repo <path>', 'repository directory', process.cwd())
   .option('--debug', 'show diagnostic stack traces')
 

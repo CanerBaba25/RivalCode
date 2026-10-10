@@ -2,10 +2,12 @@ import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { serve } from '@hono/node-server'
 import { serveStatic } from '@hono/node-server/serve-static'
-import { readFile, realpath, stat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { lstat, open, readFile, realpath, stat } from 'node:fs/promises'
 import { resolve, relative, isAbsolute, join } from 'node:path'
 import { Store, createRedactor, defaultConfig, loadConfig } from '@rivalcode/runtime'
 import { detectAdapters } from '@rivalcode/adapters'
+import { RIVALCODE_VERSION } from '@rivalcode/shared'
 import {
   exportRecord,
   redactBattle,
@@ -19,8 +21,7 @@ import type {
   NormalizedEvent,
   RivalConfig,
   SessionFilter,
-  Session,
-  UsageRecord
+  Session
 } from '@rivalcode/shared'
 
 type Redactor = (value: unknown) => unknown
@@ -150,29 +151,95 @@ function inside(root: string, file: string): boolean {
   return rel !== '' && !rel.startsWith(`..`) && !isAbsolute(rel)
 }
 async function readDiff(store: Store, session: Session): Promise<string> {
+  const repositoryRoot = await realpath(resolve(store.stateDir, '..'))
   const stateRoot = await realpath(store.stateDir)
+  if (!inside(repositoryRoot, stateRoot))
+    throw new InputError('State directory is outside this repository.')
+
   const directory = session.artifactDir.includes('[REDACTED]')
     ? join(stateRoot, 'sessions', recordId(session.id))
     : resolve(session.artifactDir)
   if (!inside(stateRoot, directory))
     throw new InputError('Artifact path is outside this repository state directory.')
-  const resolvedDirectory = await realpath(directory).catch(() => null)
+  const resolvedDirectory = await realpath(directory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null
+    throw error
+  })
   if (!resolvedDirectory) return ''
   if (!inside(stateRoot, resolvedDirectory))
     throw new InputError('Artifact directory is outside this repository state directory.')
-  const file = await realpath(join(resolvedDirectory, 'final.diff')).catch(() => null)
-  if (!file) return ''
-  if (!inside(resolvedDirectory, file)) throw new InputError('Artifact path is not a session diff.')
-  const metadata = await stat(file)
-  if (!metadata.isFile() || metadata.size > 32 * 1024 * 1024)
+  const file = join(resolvedDirectory, 'final.diff')
+  const metadata = await lstat(file, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null
+    throw error
+  })
+  if (!metadata) return ''
+  if (!metadata.isFile() || metadata.nlink !== 1n)
+    throw new InputError('Saved diff must be a regular file without links.')
+  if (metadata.size > 32n * 1024n * 1024n)
     throw new InputError('Diff exceeds the dashboard display limit; use the local artifact.')
-  return readFile(file, 'utf8')
+
+  const descriptor = await open(
+    file,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+  )
+
+  try {
+    const opened = await descriptor.stat({ bigint: true })
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      opened.dev !== metadata.dev ||
+      opened.ino !== metadata.ino
+    )
+      throw new InputError('Saved diff changed before it could be opened. Retry the request.')
+
+    const size = Number(metadata.size)
+    const bytes = Buffer.alloc(size + 1)
+    let length = 0
+    while (length < bytes.length) {
+      const result = await descriptor.read(bytes, length, bytes.length - length, length)
+      if (!result.bytesRead) break
+      length += result.bytesRead
+    }
+
+    const after = await descriptor.stat({ bigint: true })
+    if (
+      length !== size ||
+      after.size !== metadata.size ||
+      after.mtimeNs !== metadata.mtimeNs ||
+      after.nlink !== 1n
+    )
+      throw new InputError('Saved diff changed while reading. Retry the request.')
+
+    return bytes.subarray(0, length).toString('utf8')
+  } finally {
+    await descriptor.close()
+  }
 }
-function totals(sessions: Session[], key: keyof UsageRecord): number | null {
+function usageValue(session: Session, key: 'totalTokens' | 'costUsd'): number | undefined {
+  const value = session.usage[key]
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return
+  if (key === 'totalTokens' && !Number.isSafeInteger(value)) return
+
+  return value
+}
+
+function costType(value: unknown): 'provider_reported' | 'estimated' | 'unknown' {
+  return value === 'provider_reported' || value === 'estimated' ? value : 'unknown'
+}
+
+function totals(sessions: Session[], key: 'totalTokens' | 'costUsd'): number | null {
   const values = sessions
-    .map((s) => s.usage[key])
-    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
-  return values.length ? values.reduce((sum, value) => sum + value, 0) : null
+    .map((session) => usageValue(session, key))
+    .filter((value): value is number => value !== undefined)
+  if (!values.length) return null
+
+  const total = values.reduce((sum, value) => sum + value, 0)
+  if (!Number.isFinite(total) || (key === 'totalTokens' && !Number.isSafeInteger(total)))
+    return null
+
+  return total
 }
 async function revision(store: Store): Promise<string> {
   const files = await Promise.all(
@@ -266,7 +333,9 @@ export function createApp(root: string, webDir?: string): Hono<PrivacyEnv> {
     context.set('privacy', { config, redact })
     await next()
   })
-  app.get('/api/health', (context) => context.json({ ok: true, version: '0.1.0', local: true }))
+  app.get('/api/health', (context) =>
+    context.json({ ok: true, version: RIVALCODE_VERSION, local: true })
+  )
   let detection: ReturnType<typeof detectAdapters> | undefined
   let detectedAt = 0
   app.get('/api/agents', async (context) => {
@@ -361,7 +430,12 @@ export function createApp(root: string, webDir?: string): Hono<PrivacyEnv> {
       : context.json({ error: 'Battle not found.' }, 404)
   })
   app.get('/api/leaderboard', (context) =>
-    context.json(store.leaderboard(filters(context.req.query())))
+    context.json(
+      store.leaderboard(filters(context.req.query())).map((row) => ({
+        ...row,
+        costType: row.costType === 'mixed' ? 'mixed' : costType(row.costType)
+      }))
+    )
   )
   app.get('/api/overview', (context) => {
     const filter = filters(context.req.query())
@@ -379,8 +453,8 @@ export function createApp(root: string, webDir?: string): Hono<PrivacyEnv> {
         runs: sessions.filter((session) => session.agentId === agentId).length
       })
     )
-    const costs = sessions.filter((session) => Number.isFinite(session.usage.costUsd))
-    const costTypes = new Set(costs.map((session) => session.usage.costType ?? 'unknown'))
+    const costs = sessions.filter((session) => usageValue(session, 'costUsd') !== undefined)
+    const costTypes = new Set(costs.map((session) => costType(session.usage.costType)))
     return context.json({
       totalSessions: sessions.length,
       successfulSessions: sessions.filter(
@@ -396,7 +470,8 @@ export function createApp(root: string, webDir?: string): Hono<PrivacyEnv> {
         : null,
       totalTokens: totals(sessions, 'totalTokens'),
       totalCostUsd: totals(sessions, 'costUsd'),
-      tokensAvailableRuns: sessions.filter((s) => s.usage.totalTokens !== undefined).length,
+      tokensAvailableRuns: sessions.filter((s) => usageValue(s, 'totalTokens') !== undefined)
+        .length,
       costAvailableRuns: costs.length,
       costType: costTypes.size > 1 ? 'mixed' : ([...costTypes][0] ?? 'unknown'),
       agentUsage: usageByAgent,

@@ -26,6 +26,15 @@ const emptyFilters: FilterValues = {
   tag: '',
   demo: ''
 }
+
+export function calendarBound(value: string, endOfDay: boolean): string {
+  const bound = endOfDay ? '23:59:59.999' : '00:00:00.000'
+  const date = new Date(`${value}T${bound}`)
+
+  // Keep unsupported input for the API's explicit validation instead of crashing render.
+  return Number.isFinite(date.getTime()) ? date.toISOString() : value
+}
+
 export function useFilters() {
   const [values, setValues] = useState<FilterValues>({ ...emptyFilters })
   const [offset, setOffset] = useState(0)
@@ -42,11 +51,7 @@ export function useFilters() {
   for (const [key, value] of Object.entries(values)) {
     if (!value) continue
     // Date inputs describe the same local calendar days shown in the session table.
-    const bound = key === 'to' ? '23:59:59.999' : '00:00:00.000'
-    params.set(
-      key,
-      key === 'from' || key === 'to' ? new Date(`${value}T${bound}`).toISOString() : value
-    )
+    params.set(key, key === 'from' || key === 'to' ? calendarBound(value, key === 'to') : value)
   }
   params.set('limit', '30')
   params.set('offset', String(offset))
@@ -120,6 +125,7 @@ export function Filters({
         From
         <input
           type="date"
+          max="9999-12-31"
           value={values.from}
           onChange={(event) => update('from', event.target.value)}
         />
@@ -128,6 +134,7 @@ export function Filters({
         Until
         <input
           type="date"
+          max="9999-12-31"
           value={values.to}
           onChange={(event) => update('to', event.target.value)}
         />

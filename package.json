@@ -1,6 +1,6 @@
 {
   "name": "rivalcode",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local profiler, replay debugger and benchmark arena for AI coding agents",
   "type": "module",
   "license": "MIT",

@@ -1,3 +1,4 @@
+import { constants } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { Store, createRedactor, loadConfig } from '@rivalcode/runtime'
@@ -8,10 +9,37 @@ const escape = (value: unknown) =>
   String(value ?? 'N/A')
     .replaceAll('|', '\\|')
     .replaceAll('\n', ' ')
-const cost = (session: Session) =>
-  session.usage.costUsd === undefined
-    ? 'N/A'
-    : `$${session.usage.costUsd.toFixed(4)} (${session.usage.costType}; ${session.usage.source ?? 'agent telemetry'})`
+
+const cost = (session: Session) => {
+  const value = session.usage.costUsd
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 'N/A'
+
+  const amount = value > 0 && value < 0.0001 ? value.toPrecision(2) : value.toFixed(4)
+
+  return `$${amount} (${session.usage.costType ?? 'unknown'}; ${session.usage.source ?? 'agent telemetry'})`
+}
+
+const tokens = (session: Session) => {
+  const usage = session.usage
+  if (
+    typeof usage.totalTokens !== 'number' ||
+    !Number.isSafeInteger(usage.totalTokens) ||
+    usage.totalTokens < 0
+  )
+    return 'N/A'
+
+  const scope =
+    usage.tokenScope === 'main-agent'
+      ? 'main agent only; excludes subagents'
+      : usage.tokenScope === 'unknown' ||
+          (session.agentId === 'claude' && usage.tokenScope !== 'session')
+        ? 'accounting scope unverified'
+        : usage.tokenScope === 'session'
+          ? 'session total'
+          : 'provider-reported totals'
+
+  return `${usage.totalTokens} (${scope}${usage.modelScope === 'mixed' ? '; mixed models' : ''})`
+}
 
 export async function exportRecord(
   root: string,
@@ -32,6 +60,17 @@ export async function exportRecord(
           .filter((item): item is Session => item !== undefined)
     const records = []
     for (const item of sessions) {
+      const repository = await realpath(path.dirname(store.stateDir))
+      const state = await realpath(store.stateDir)
+      const stateRelative = path.relative(repository, state)
+      if (
+        !stateRelative ||
+        stateRelative === '..' ||
+        stateRelative.startsWith('..' + path.sep) ||
+        path.isAbsolute(stateRelative)
+      )
+        throw new Error('RivalCode state directory escapes the repository')
+
       const events = []
       for (let offset = 0; ; offset += 500) {
         const page = store.getEvents(item.id, 500, offset)
@@ -41,8 +80,8 @@ export async function exportRecord(
         }
         if (offset + page.items.length >= page.total) break
       }
+
       let diff = ''
-      const state = await realpath(store.stateDir)
       let artifactDir = item.artifactDir
       if (artifactDir.includes('[REDACTED]')) {
         if (!/^[a-zA-Z0-9_-]{1,128}$/.test(item.id))
@@ -58,19 +97,52 @@ export async function exportRecord(
       }
       if (outsideState(path.resolve(artifactDir))) throw new Error('Invalid session artifact path')
       try {
-        if (outsideState(await realpath(artifactDir)))
-          throw new Error('Invalid session artifact path')
-        const file = path.join(artifactDir, 'final.diff')
-        if ((await lstat(file)).isSymbolicLink())
-          throw new Error('Refusing a symlinked session diff')
-        const descriptor = await open(file, 'r')
+        const directory = await realpath(artifactDir)
+        if (outsideState(directory)) throw new Error('Invalid session artifact path')
+
+        const file = path.join(directory, 'final.diff')
+        const before = await lstat(file, { bigint: true })
+        if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1n)
+          throw new Error('Refusing an unsafe session diff')
+
+        const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+        const descriptor = await open(file, flags)
         try {
-          const info = await descriptor.stat()
-          const size = Math.min(info.size, config.limits.maxArtifactBytes)
+          const info = await descriptor.stat({ bigint: true })
+          if (
+            !info.isFile() ||
+            info.nlink !== 1n ||
+            info.dev !== before.dev ||
+            info.ino !== before.ino ||
+            info.size !== before.size ||
+            info.mtimeNs !== before.mtimeNs
+          )
+            throw new Error('Refusing an unsafe session diff')
+
+          const limit = BigInt(config.limits.maxArtifactBytes)
+          const size = Number(info.size > limit ? limit : info.size)
           const buffer = Buffer.alloc(size)
-          const result = await descriptor.read(buffer, 0, size, 0)
-          diff = buffer.subarray(0, result.bytesRead).toString('utf8')
-          if (info.size > size) diff += '\n[RivalCode diff truncated]\n'
+          let length = 0
+          while (length < size) {
+            const result = await descriptor.read(buffer, length, size - length, length)
+            if (!result.bytesRead) break
+            length += result.bytesRead
+          }
+
+          const after = await descriptor.stat({ bigint: true })
+          if (
+            length !== size ||
+            !after.isFile() ||
+            after.nlink !== 1n ||
+            after.dev !== info.dev ||
+            after.ino !== info.ino ||
+            after.size !== info.size ||
+            after.mtimeNs !== info.mtimeNs
+          )
+            throw new Error('Refusing an unsafe session diff')
+
+          diff = buffer.toString('utf8')
+          if (info.size > BigInt(size)) diff += '\n[RivalCode diff truncated]\n'
         } finally {
           await descriptor.close()
         }
@@ -98,7 +170,7 @@ export async function exportRecord(
     ]
     for (const item of records)
       lines.push(
-        `| ${item.demo ? 'Demo Agent' : item.agentId} | ${item.status} | ${item.score?.verificationAvailable ? (item.score.requiredPassed ? 'PASS' : 'FAIL') : 'N/A'} | ${item.score?.total ?? 'N/A'} | ${(item.durationMs / 1000).toFixed(1)}s | ${item.files.length} | ${item.usage.totalTokens ?? 'N/A'} | ${escape(cost(item))} |`
+        `| ${item.demo ? 'Demo Agent' : item.agentId} | ${item.status} | ${item.score?.verificationAvailable ? (item.score.requiredPassed ? 'PASS' : 'FAIL') : 'N/A'} | ${item.score?.total ?? 'N/A'} | ${(item.durationMs / 1000).toFixed(1)}s | ${item.files.length} | ${escape(tokens(item))} | ${escape(cost(item))} |`
       )
     if (battle)
       lines.push(

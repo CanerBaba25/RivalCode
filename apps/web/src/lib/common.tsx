@@ -142,6 +142,20 @@ export function modelLabel(model?: string, source?: 'configured' | 'native'): st
   if (source === 'native') return `Native model: ${model}`
   return `Model: ${model} · source unavailable`
 }
+
+export function tokenAccountingLabel(session: Pick<Session, 'agentId' | 'usage'>): string {
+  if (session.usage.tokenScope === 'session') return 'Whole session'
+  if (session.usage.tokenScope === 'main-agent') return 'Main agent only (subagents excluded)'
+  if (
+    session.usage.tokenScope === undefined &&
+    session.agentId !== 'claude' &&
+    session.agentId !== 'demo'
+  )
+    return 'Provider-reported totals'
+
+  return 'Unverified accounting scope'
+}
+
 export function costProvenance(type?: string, value?: number | null): string {
   if (value === null || value === undefined) return 'Cost unavailable'
   if (type === 'estimated') return 'API-equivalent estimate*'

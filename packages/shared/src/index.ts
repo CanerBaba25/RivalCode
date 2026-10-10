@@ -1,3 +1,7 @@
+import manifest from '../../../package.json' with { type: 'json' }
+
+export const RIVALCODE_VERSION = manifest.version
+
 export type AgentId = 'codex' | 'claude' | 'gemini' | 'opencode' | 'demo'
 export type RunStatus = 'preparing' | 'running' | 'verifying' | 'completed' | 'failed' | 'aborted'
 export type EventType =

@@ -14,6 +14,7 @@ import {
   cost,
   costProvenance,
   modelLabel,
+  tokenAccountingLabel,
   date,
   shortId
 } from '../lib/common.js'
@@ -24,6 +25,7 @@ import { DiffViewer } from '../components/DiffViewer.js'
 import { Verification } from '../components/Verification.js'
 import { Findings } from '../components/Findings.js'
 import { EvidenceDialog } from '../components/EvidenceDialog.js'
+import { isFinal } from '../lib/comparison.js'
 
 export function SessionDetail({ id }: { id: string }) {
   const query = useApi<Session>(`/api/sessions/${id}`)
@@ -110,7 +112,9 @@ export function SessionDetail({ id }: { id: string }) {
               detail={
                 session.finishedAt
                   ? `Finished ${date(session.finishedAt)}`
-                  : 'Session is still active'
+                  : isFinal(session)
+                    ? 'Finish time unavailable'
+                    : 'Session is still active'
               }
               icon="clock"
             />
@@ -175,6 +179,7 @@ export function SessionDetail({ id }: { id: string }) {
                 key={key}
                 role="tab"
                 aria-selected={tab === key}
+                tabIndex={tab === key ? 0 : -1}
                 id={`tab-${key}`}
                 aria-controls={`panel-${key}`}
                 onClick={() => setTab(key ?? 'timeline')}
@@ -260,6 +265,14 @@ export function SessionDetail({ id }: { id: string }) {
                   <div>
                     <dt>Cached input</dt>
                     <dd>{number(session.usage.cachedInputTokens)}</dd>
+                  </div>
+                  <div>
+                    <dt>Reported total tokens</dt>
+                    <dd>{number(session.usage.totalTokens)}</dd>
+                  </div>
+                  <div>
+                    <dt>Token accounting scope</dt>
+                    <dd>{tokenAccountingLabel(session)}</dd>
                   </div>
                   <div>
                     <dt>Cost</dt>

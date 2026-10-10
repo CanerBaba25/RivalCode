@@ -61,6 +61,21 @@ export function eventPath(event: NormalizedEvent): string | null {
       ? event.payload.file
       : null
 }
+
+export function savedDiffPath(observed: string, files: Session['files']): string {
+  const normalize = (path: string) => path.replaceAll('\\', '/').replace(/^\.\//, '')
+  const path = normalize(observed)
+  const exact = files.find((file) => normalize(file.path) === path)
+  if (exact) return exact.path
+
+  // Absolute native paths can match several suffixes; the longest is most specific.
+  const matching = files
+    .filter((file) => path.endsWith(`/${normalize(file.path)}`))
+    .sort((first, second) => normalize(second.path).length - normalize(first.path).length)[0]
+
+  return matching?.path ?? path
+}
+
 export function Payload({ payload }: { payload: Record<string, unknown> }) {
   const outputKeys = new Set(['text', 'delta', 'output', 'stdout', 'stderr'])
   const outputs = Object.entries(payload).filter(
@@ -321,11 +336,7 @@ export function Timeline({
                   <button
                     className="button secondary"
                     onClick={() => {
-                      const observed = (eventPath(selected) ?? '').replaceAll('\\', '/')
-                      const matching = session.files.find(
-                        (file) => observed === file.path || observed.endsWith(`/${file.path}`)
-                      )
-                      onFile(matching?.path ?? observed.replace(/^\.\//, ''))
+                      onFile(savedDiffPath(eventPath(selected) ?? '', session.files))
                     }}
                   >
                     Inspect saved final diff
@@ -344,7 +355,8 @@ export function Timeline({
           </div>
         </div>
       ) : (
-        !loading && (
+        !loading &&
+        !error && (
           <Empty title="No events match this view">
             <p>
               {events.length

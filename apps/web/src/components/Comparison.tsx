@@ -12,6 +12,7 @@ import {
   cost,
   costProvenance,
   modelLabel,
+  tokenAccountingLabel,
   date,
   shortId
 } from '../lib/common.js'
@@ -648,17 +649,7 @@ export function BattleEvidence({ selection }: { selection: EvidenceSelection }) 
           </div>
           <div>
             <dt>Token accounting scope</dt>
-            <dd>
-              {session.usage.tokenScope === 'session'
-                ? 'Whole session'
-                : session.usage.tokenScope === 'main-agent'
-                  ? 'Main agent only (subagents excluded)'
-                  : session.usage.tokenScope === undefined &&
-                      session.agentId !== 'claude' &&
-                      session.agentId !== 'demo'
-                    ? 'Provider-reported totals'
-                    : 'Unverified accounting scope'}
-            </dd>
+            <dd>{tokenAccountingLabel(session)}</dd>
           </div>
           <div>
             <dt>Cost</dt>

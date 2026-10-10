@@ -52,13 +52,27 @@ export function detectFindings(
       `${v.command} exited ${v.exitCode ?? 'without an exit code'}.`,
       { checkIds: [v.id] }
     )
-    if (verification.some((b) => b.phase === 'baseline' && b.checkId === v.checkId && b.passed))
+
+    const baseline = verification.filter(
+      (b) =>
+        b.phase === 'baseline' &&
+        b.checkId === v.checkId &&
+        b.command === v.command &&
+        b.required === v.required
+    )
+
+    if (
+      baseline.length === 1 &&
+      baseline[0]!.passed &&
+      v.command.trim() &&
+      !v.command.includes('[REDACTED]')
+    )
       add(
         'regression',
         'error',
         `${v.checkId} regressed from baseline`,
         'The baseline passed and independent final verification failed.',
-        { checkIds: verification.filter((b) => b.checkId === v.checkId).map((b) => b.id) }
+        { checkIds: [baseline[0]!.id, v.id] }
       )
   }
   const forbidden = files.filter((f) =>

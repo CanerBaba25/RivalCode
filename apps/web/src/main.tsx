@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { RIVALCODE_VERSION } from '@rivalcode/shared'
 import { Router, Revision, Link, Icon, Empty } from './lib/common.js'
 import { Overview } from './pages/Overview.js'
 import { Sessions } from './pages/Sessions.js'
@@ -114,7 +115,7 @@ function App() {
                 <Icon name="shield" size={18} />
               </div>
               <div className="sidebar-version">
-                <span>RivalCode v0.1.1</span>
+                <span>RivalCode v{RIVALCODE_VERSION}</span>
                 <span>OPEN SOURCE</span>
               </div>
             </div>

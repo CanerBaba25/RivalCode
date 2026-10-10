@@ -112,9 +112,11 @@ export function DiffViewer({ session, selectedPath }: { session: Session; select
   useEffect(() => {
     if (selectedPath) setFile(selectedPath)
   }, [selectedPath])
-  const paths = [
-    ...new Set([...session.files.map((f) => f.path), ...parsed.map((f) => f.path)])
-  ].filter((path) => path.toLowerCase().includes(filter.toLowerCase()))
+  const allPaths = [...new Set([...session.files.map((f) => f.path), ...parsed.map((f) => f.path)])]
+  const paths = allPaths.filter((path) => path.toLowerCase().includes(filter.toLowerCase()))
+  const selectedHidden = Boolean(
+    file && filter && !file.toLowerCase().includes(filter.toLowerCase())
+  )
   const shown = parsed.filter(
     (entry) =>
       (!file || entry.path === file) && entry.path.toLowerCase().includes(filter.toLowerCase())
@@ -142,7 +144,7 @@ export function DiffViewer({ session, selectedPath }: { session: Session; select
       </div>
       <State {...query} />
       {query.data &&
-        (paths.length || query.data.diff ? (
+        (allPaths.length || query.data.diff ? (
           <div className="diff-layout">
             <aside className="files-sidebar" aria-label="Changed files">
               <label>
@@ -229,12 +231,22 @@ export function DiffViewer({ session, selectedPath }: { session: Session; select
               })}
               {!shown.length && (
                 <Empty
-                  title={file ? 'No textual patch for this file' : 'No files match this filter'}
+                  title={
+                    selectedHidden
+                      ? 'Selected file does not match this filter'
+                      : !paths.length
+                        ? 'No files match this filter'
+                        : file
+                          ? 'No textual patch for this file'
+                          : 'No textual patch available'
+                  }
                 >
                   <p>
-                    {session.files.find((f) => f.path === file)?.binary
-                      ? 'Binary files have no textual diff.'
-                      : 'The saved patch does not contain a textual diff for this selection.'}
+                    {selectedHidden || !paths.length
+                      ? 'Change or clear the file filter to inspect saved changes.'
+                      : session.files.find((f) => f.path === file)?.binary
+                        ? 'Binary files have no textual diff.'
+                        : 'The saved patch does not contain a textual diff for this selection.'}
                   </p>
                 </Empty>
               )}
